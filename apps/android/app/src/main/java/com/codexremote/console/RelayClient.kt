@@ -14,6 +14,7 @@ class RelayClient(
     private val androidId: String,
     private val androidName: String,
     private val onEvent: (String) -> Unit,
+    private val onConnected: (Pairing) -> Unit,
     private val onRpcResponse: (JSONObject) -> Unit
 ) {
     private val http = OkHttpClient()
@@ -52,6 +53,7 @@ class RelayClient(
                     ).toString()
                 )
                 onEvent("connected to ${pairing.agentName}")
+                onConnected(pairing)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
