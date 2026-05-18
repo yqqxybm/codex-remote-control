@@ -74,4 +74,10 @@ cd apps/android
 gradle assembleDebug
 ```
 
-The current workstation used to create this project did not have a Java runtime, so Android compilation was not verified here.
+On this workstation, the debug APK was built with a user-local JDK, Gradle, and Android SDK under `~/.codex-remote-console/toolchains`.
+
+The generated debug APK path is:
+
+```text
+apps/android/app/build/outputs/apk/debug/app-debug.apk
+```
