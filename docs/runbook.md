@@ -60,12 +60,15 @@ CRC_RELAY_URL=wss://your-domain.example/codex-remote/ws \
 CRC_RELAY_ACCESS_TOKEN=<long-random-token> \
 CRC_DEVICE_NAME="Mac mini" \
 CRC_CODEX_HOME=/Users/you/.codex \
+CRC_CODEX_BIN=/Users/you/.codex/packages/standalone/current/codex \
 CRC_WRITE_MODE=app-server \
 CRC_AGENT_RECONNECT_MS=3000 \
 npm start -w @crc/agent
 ```
 
 The agent prints a pairing URI. Paste it into the Android app. The Android app stores the last pairing URI and reconnects on app launch.
+
+For writes, the agent runs the Codex app-server over stdio. `CRC_CODEX_BIN` is optional; when unset, the agent tries `~/.codex/packages/standalone/current/codex`, then `/Applications/Codex.app/Contents/Resources/codex`, then `codex` from `PATH`.
 
 ## Local Development
 

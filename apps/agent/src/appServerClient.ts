@@ -1,4 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 
 export interface UserTextInput {
@@ -7,16 +10,17 @@ export interface UserTextInput {
 }
 
 export class AppServerClient {
+  private readonly codexBin = resolveCodexBin();
   private child?: ChildProcessWithoutNullStreams;
   private nextId = 1;
   private pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 
   async start(): Promise<void> {
     if (this.child) return;
-    this.child = spawn("codex", ["app-server", "proxy"], { stdio: "pipe" });
+    this.child = spawn(this.codexBin, ["app-server", "--listen", "stdio://"], { stdio: "pipe" });
     this.child.on("exit", (code) => {
       for (const pending of this.pending.values()) {
-        pending.reject(new Error(`codex app-server proxy exited with code ${code ?? "unknown"}`));
+        pending.reject(new Error(`codex app-server exited with code ${code ?? "unknown"}`));
       }
       this.pending.clear();
       this.child = undefined;
@@ -25,7 +29,7 @@ export class AppServerClient {
     rl.on("line", (line) => this.onLine(line));
     await this.request("initialize", {
       clientInfo: { name: "codex-remote-console", version: "0.1.0" },
-      capabilities: { experimentalApi: true }
+      capabilities: { experimentalApi: true, requestAttestation: false }
     });
   }
 
@@ -84,4 +88,19 @@ export class AppServerClient {
     }
     pending.resolve(message.result);
   }
+}
+
+function resolveCodexBin(): string {
+  const candidates = [
+    process.env.CRC_CODEX_BIN,
+    join(homedir(), ".codex/packages/standalone/current/codex"),
+    "/Applications/Codex.app/Contents/Resources/codex",
+    "codex"
+  ].filter((value): value is string => Boolean(value));
+  for (const candidate of candidates) {
+    if (candidate === "codex" || existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return "codex";
 }
