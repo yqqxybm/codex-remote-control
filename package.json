@@ -1,0 +1,24 @@
+{
+  "name": "codex-remote-console",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted Android remote client for local Codex sessions.",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "vitest run",
+    "typecheck": "tsc -b packages/protocol apps/relay apps/agent",
+    "smoke": "tsx tests/smoke.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.4"
+  }
+}

@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.DS_Store
+*.log
+*.tsbuildinfo
+apps/android/.gradle/
+apps/android/build/
+apps/android/app/build/
+local.properties
+.idea/
+.codex/traces/*.tmp
