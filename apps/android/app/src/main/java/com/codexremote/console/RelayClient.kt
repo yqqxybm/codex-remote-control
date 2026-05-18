@@ -1,5 +1,7 @@
 package com.codexremote.console
 
+import android.os.Handler
+import android.os.Looper
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -15,12 +17,20 @@ class RelayClient(
     private val onRpcResponse: (JSONObject) -> Unit
 ) {
     private val http = OkHttpClient()
+    private val handler = Handler(Looper.getMainLooper())
     private var socket: WebSocket? = null
     private var seq = 1L
     private var pairing: Pairing? = null
+    private var generation = 0
 
     fun connect(pairing: Pairing) {
         this.pairing = pairing
+        generation += 1
+        socket?.cancel()
+        open(pairing, generation)
+    }
+
+    private fun open(pairing: Pairing, generation: Int) {
         val request = Request.Builder().url(pairing.relayUrl).build()
         socket = http.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -58,13 +68,20 @@ class RelayClient(
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                onEvent("relay error: ${t.message}")
+                scheduleReconnect("relay error: ${t.message ?: "connection failed"}", generation)
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                scheduleReconnect("relay closed", generation)
             }
         })
     }
 
     fun rpc(method: String, params: JSONObject = JSONObject()) {
-        val target = pairing ?: error("not paired")
+        val target = pairing ?: run {
+            onEvent("not paired")
+            return
+        }
         val requestId = "android-${System.currentTimeMillis()}-${seq}"
         val body = JSONObject()
             .put("type", "rpc_request")
@@ -73,5 +90,14 @@ class RelayClient(
             .put("params", params)
         val envelope = cryptoBox.encryptJson(androidId, target.agentId, seq++, target.agentPublicKeyB64, body)
         socket?.send(envelope.toString())
+    }
+
+    private fun scheduleReconnect(message: String, generation: Int) {
+        val target = pairing ?: return
+        if (generation != this.generation) return
+        onEvent("$message; reconnecting")
+        handler.postDelayed({
+            if (generation == this.generation) open(target, generation)
+        }, 3000)
     }
 }

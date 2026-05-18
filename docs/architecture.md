@@ -14,6 +14,8 @@ This is not a general remote control system. It is a fixed-device Codex mobile m
 
 The Android phone and each Mac are trusted endpoints. `user-owned relay server` is trusted for availability but not for confidentiality. The relay receives device ids and envelope metadata, but not plaintext session content.
 
+Remote access uses `wss://your-domain.example/codex-remote/ws` on the existing `user-owned relay server` Nginx TLS site. The relay process itself binds only to `127.0.0.1:8787`, so there is no separate public relay port to manage.
+
 ## Protocol
 
 All application payloads are encrypted with ECDH P-256 and AES-256-GCM:

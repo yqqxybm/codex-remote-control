@@ -15,6 +15,7 @@ import { loadConfig, saveConfig, type LoadedConfig } from "./config.js";
 import { CodexStore } from "./codexStore.js";
 
 let seq = 1;
+const reconnectMs = Math.max(1000, Number.parseInt(process.env.CRC_AGENT_RECONNECT_MS ?? "3000", 10) || 3000);
 
 function isRpcRequest(message: AppMessage): message is RpcRequest {
   return message.type === "rpc_request";
@@ -44,6 +45,11 @@ async function main(): Promise<void> {
     console.log(loaded.pairingUri);
   }
 
+  connectRelay(loaded, store, appServer);
+}
+
+function connectRelay(loaded: LoadedConfig, store: CodexStore, appServer: AppServerClient): void {
+  const { config } = loaded;
   const ws = new WebSocket(config.relayUrl);
   ws.on("open", () => {
     ws.send(
@@ -78,8 +84,13 @@ async function main(): Promise<void> {
     }
   });
 
+  ws.on("error", (error) => {
+    console.error(`[agent] relay connection error: ${error.message}`);
+  });
+
   ws.on("close", () => {
-    console.error("[agent] relay connection closed");
+    console.error(`[agent] relay connection closed; reconnecting in ${reconnectMs}ms`);
+    setTimeout(() => connectRelay(loaded, store, appServer), reconnectMs);
   });
 }
 

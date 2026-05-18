@@ -17,6 +17,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -27,19 +28,20 @@ import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
     private val cryptoBox = CryptoBox()
-    private lateinit var relay: RelayClient
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val androidId = getPreferences(MODE_PRIVATE).getString("androidId", null)
+        val preferences = getPreferences(MODE_PRIVATE)
+        val androidId = preferences.getString("androidId", null)
             ?: "android-${System.currentTimeMillis()}".also {
-                getPreferences(MODE_PRIVATE).edit().putString("androidId", it).apply()
+                preferences.edit().putString("androidId", it).apply()
             }
         val androidName = android.os.Build.MODEL ?: "Android"
+        val savedPairingUri = preferences.getString("pairingUri", "") ?: ""
         cryptoBox.ensureKeyPair()
 
         setContent {
-            val pairingText = remember { mutableStateOf("") }
+            val pairingText = remember { mutableStateOf(savedPairingUri) }
             val status = remember { mutableStateOf("not connected") }
             val sessions = remember { mutableStateListOf<JSONObject>() }
             val messages = remember { mutableStateListOf<String>() }
@@ -74,13 +76,32 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            relay = RelayClient(
-                cryptoBox = cryptoBox,
-                androidId = androidId,
-                androidName = androidName,
-                onEvent = { runOnUiThread { status.value = it } },
-                onRpcResponse = ::handleResponse
-            )
+            val relay = remember {
+                RelayClient(
+                    cryptoBox = cryptoBox,
+                    androidId = androidId,
+                    androidName = androidName,
+                    onEvent = { runOnUiThread { status.value = it } },
+                    onRpcResponse = ::handleResponse
+                )
+            }
+
+            fun connect(uri: String) {
+                runCatching {
+                    val cleanUri = uri.trim()
+                    val pairing = parsePairingUri(cleanUri)
+                    preferences.edit().putString("pairingUri", cleanUri).apply()
+                    relay.connect(pairing)
+                }.onFailure {
+                    status.value = it.message ?: "pairing failed"
+                }
+            }
+
+            LaunchedEffect(Unit) {
+                if (savedPairingUri.isNotBlank()) {
+                    connect(savedPairingUri)
+                }
+            }
 
             MaterialTheme {
                 Surface(Modifier.fillMaxSize()) {
@@ -96,8 +117,7 @@ class MainActivity : ComponentActivity() {
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(onClick = {
-                                val pairing = parsePairingUri(pairingText.value.trim())
-                                relay.connect(pairing)
+                                connect(pairingText.value)
                             }) { Text("Connect") }
                             Button(onClick = { relay.rpc("sessions.list") }) { Text("Sessions") }
                         }

@@ -20,7 +20,7 @@ Mac Agent
 Codex app-server + ~/.codex sessions
 ```
 
-The relay only routes encrypted envelopes by device id. It does not see Codex session content and does not call Codex.
+The relay only routes encrypted envelopes by device id. It does not see Codex session content and does not call Codex. The production route is through `user-owned relay server` at `wss://your-domain.example/codex-remote/ws`; LAN relay runs are only for development smoke tests.
 
 ## Components
 
@@ -38,7 +38,7 @@ npm test
 npm run smoke
 ```
 
-Run a local relay:
+Run a local relay for development:
 
 ```bash
 CRC_RELAY_ACCESS_TOKEN=dev-token npm run dev -w @crc/relay
@@ -54,6 +54,14 @@ npm run dev -w @crc/agent
 ```
 
 The agent creates its config under `~/.codex-remote-console/agent.json` and prints a pairing URI for the Android app.
+
+For remote use, run the relay on `user-owned relay server` and point Mac agents at:
+
+```bash
+CRC_RELAY_URL=wss://your-domain.example/codex-remote/ws
+```
+
+The agent reconnects automatically after relay restarts or network changes.
 
 ## Write Support
 
