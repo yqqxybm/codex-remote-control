@@ -4,6 +4,7 @@ dist/
 .DS_Store
 *.log
 *.tsbuildinfo
+.codex/
 apps/android/.gradle/
 apps/android/build/
 apps/android/app/build/
