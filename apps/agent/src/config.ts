@@ -24,6 +24,7 @@ export interface AgentConfig {
   writeMode: "app-server" | "read-only";
   keyPair: DeviceKeyPair;
   trustedAndroid?: TrustedAndroid;
+  recentWriteRequestIds?: Array<{ requestId: string; createdAtMs: number }>;
 }
 
 export interface LoadedConfig {

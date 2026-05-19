@@ -103,6 +103,7 @@ class RelayClient(
         val body = JSONObject()
             .put("type", "rpc_request")
             .put("requestId", requestId)
+            .put("createdAtMs", System.currentTimeMillis())
             .put("method", method)
             .put("params", params)
         val envelope = cryptoBox.encryptJson(androidId, target.agentId, seq++, target.agentPublicKeyB64, body)

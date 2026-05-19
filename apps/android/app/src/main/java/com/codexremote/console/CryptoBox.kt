@@ -7,19 +7,20 @@ import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.PrivateKey
+import java.security.SecureRandom
 import java.security.spec.ECGenParameterSpec
 import java.security.spec.X509EncodedKeySpec
 import javax.crypto.Cipher
 import javax.crypto.KeyAgreement
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
-import kotlin.random.Random
 import org.json.JSONObject
 
 private const val CONTEXT = "codex-remote-console-v1"
 
 class CryptoBox(private val alias: String = "codex_remote_console_device") {
     private val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+    private val secureRandom = SecureRandom()
 
     fun ensureKeyPair(): String {
         if (!keyStore.containsAlias(alias)) {
@@ -40,8 +41,8 @@ class CryptoBox(private val alias: String = "codex_remote_console_device") {
     }
 
     fun encryptJson(from: String, to: String, seq: Long, peerPublicKeyB64: String, body: JSONObject): JSONObject {
-        val salt = Random.Default.nextBytes(16)
-        val nonce = Random.Default.nextBytes(12)
+        val salt = secureBytes(16)
+        val nonce = secureBytes(12)
         val key = deriveKey(peerPublicKeyB64, salt, from, to, seq)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(128, nonce))
@@ -116,6 +117,10 @@ class CryptoBox(private val alias: String = "codex_remote_console_device") {
 
     private fun privateKey(): PrivateKey {
         return keyStore.getKey(alias, null) as PrivateKey
+    }
+
+    private fun secureBytes(size: Int): ByteArray {
+        return ByteArray(size).also { secureRandom.nextBytes(it) }
     }
 }
 

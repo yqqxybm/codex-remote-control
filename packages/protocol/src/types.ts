@@ -62,6 +62,7 @@ export interface PairingUriPayload {
 export interface RpcRequest {
   type: "rpc_request";
   requestId: string;
+  createdAtMs?: number;
   method: RpcMethod;
   params?: unknown;
 }
@@ -98,6 +99,7 @@ export interface SessionSummary {
   createdAt: number;
   updatedAt: number;
   status: "idle" | "running" | "unknown";
+  activeTurnId?: string;
 }
 
 export interface SessionMessage {

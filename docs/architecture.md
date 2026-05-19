@@ -26,6 +26,11 @@ All application payloads are encrypted with ECDH P-256 and AES-256-GCM:
 4. The shared secret, salt, and context string derive a per-message AES key.
 5. The relay forwards the encrypted envelope unchanged.
 
+Write RPCs also carry a client creation timestamp. The Mac agent accepts write
+requests only inside a short replay window and persists recent write request ids
+before executing them. This keeps a relay replay from duplicating mobile write
+actions.
+
 ## Mac Agent Boundary
 
 The Mac agent reads Codex sessions from local disk and uses Codex app-server for writes when available. It exposes a small RPC surface to the Android client:
@@ -37,6 +42,10 @@ The Mac agent reads Codex sessions from local disk and uses Codex app-server for
 - `ping`
 
 It must not expose arbitrary filesystem, shell, process, config, account, or app-server passthrough methods.
+
+The agent derives active-turn state from Codex rollout events. When a selected
+session has a `task_started` event without a matching completion event, Android
+can steer that turn or send `turn.interrupt`.
 
 ## Relay Boundary
 

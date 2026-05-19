@@ -22,6 +22,8 @@ Codex app-server + ~/.codex sessions
 
 The relay only routes encrypted envelopes by device id. It does not see Codex session content and does not call Codex. The production route is through `user-owned relay server` at `wss://your-domain.example/codex-remote/ws`; LAN relay runs are only for development smoke tests.
 
+Write requests include a creation timestamp and are replay-checked by the Mac agent. The agent stores a small recent write-request cache in `~/.codex-remote-console/agent.json` so a relay cannot repeat a captured write envelope during the accepted window.
+
 ## Components
 
 - `apps/relay`: deploy this on `user-owned relay server`.
@@ -72,6 +74,8 @@ The agent has a whitelisted Codex writer. It supports:
 - stop active turn: `turn/interrupt`
 
 This requires a working Codex app-server proxy on the Mac. If the local Codex installation cannot start `codex app-server`, reads still work and writes return a clear error.
+
+The Android composer switches to `Steer` when the selected session has an active Codex turn, and shows a `Stop` action for that turn. After a send, steer, or stop request, the app refreshes the selected session so the phone shows the latest local Codex rollout.
 
 ## Android Build
 

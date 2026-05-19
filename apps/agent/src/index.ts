@@ -13,6 +13,7 @@ import {
 import { AppServerClient } from "./appServerClient.js";
 import { loadConfig, saveConfig, type LoadedConfig } from "./config.js";
 import { CodexStore } from "./codexStore.js";
+import { reserveWriteRequest } from "./replayGuard.js";
 
 let seq = 1;
 const reconnectMs = Math.max(1000, Number.parseInt(process.env.CRC_AGENT_RECONNECT_MS ?? "3000", 10) || 3000);
@@ -139,6 +140,7 @@ async function handleEncrypted(
 
   let reply: RpcResponse;
   try {
+    await reserveWriteRequest(loaded, message);
     reply = response(message.requestId, await handleRpc(message, store, appServer, loaded.config.writeMode));
   } catch (error) {
     reply = errorResponse(message.requestId, error);

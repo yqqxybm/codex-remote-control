@@ -70,6 +70,10 @@ The agent prints a pairing URI. Paste it into the Android app. The Android app s
 
 For writes, the agent runs the Codex app-server over stdio. `CRC_CODEX_BIN` is optional; when unset, the agent tries `~/.codex/packages/standalone/current/codex`, then `/Applications/Codex.app/Contents/Resources/codex`, then `codex` from `PATH`.
 
+The agent persists recent write request ids in the same config file to reject
+replayed mobile write envelopes. Removing the config file resets both pairing
+and replay history.
+
 ## Local Development
 
 ```bash
@@ -90,3 +94,4 @@ Stop the agent, edit `~/.codex-remote-console/agent.json`, remove `trustedAndroi
 - Relay health: `curl https://your-domain.example/codex-remote/health`
 - Agent read-only works but writes fail: verify `codex app-server proxy` works on the Mac.
 - No sessions appear: verify `CRC_CODEX_HOME` points to the same Codex home used by the desktop app.
+- Send stays pending on Android: verify the Mac agent is online and check its logs for app-server or replay-window errors.

@@ -2,6 +2,8 @@ package com.codexremote.console
 
 import android.content.SharedPreferences
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
@@ -63,6 +65,7 @@ import java.util.UUID
 private const val PREF_PAIRING_URIS = "pairingUris"
 private const val PREF_LEGACY_PAIRING_URI = "pairingUri"
 private const val PREF_SELECTED_AGENT_ID = "selectedAgentId"
+private const val REQUEST_TIMEOUT_MS = 30_000L
 
 class MainActivity : ComponentActivity() {
     private val cryptoBox = CryptoBox()
@@ -75,6 +78,7 @@ class MainActivity : ComponentActivity() {
                 preferences.edit().putString("androidId", it).apply()
             }
         val androidName = android.os.Build.MODEL ?: "Android"
+        val mainHandler = Handler(Looper.getMainLooper())
         cryptoBox.ensureKeyPair()
 
         setContent {
@@ -96,6 +100,7 @@ class MainActivity : ComponentActivity() {
                 var pairingText by remember { mutableStateOf("") }
                 var showPairingEditor by remember { mutableStateOf(agents.isEmpty()) }
                 var selectedSessionId by remember { mutableStateOf<String?>(null) }
+                var activeTurnId by remember { mutableStateOf<String?>(null) }
                 var input by remember { mutableStateOf("") }
                 val sessions = remember { mutableStateListOf<SessionRow>() }
                 val messages = remember { mutableStateListOf<ChatMessage>() }
@@ -114,6 +119,7 @@ class MainActivity : ComponentActivity() {
                     sessions.clear()
                     messages.clear()
                     selectedSessionId = null
+                    activeTurnId = null
                     input = ""
                     pendingRequests.clear()
                     latestRequests.clear()
@@ -165,6 +171,15 @@ class MainActivity : ComponentActivity() {
                         }
                         optimisticMessageId?.let { markMessage(it, DeliveryState.Failed) }
                     }
+                    mainHandler.postDelayed({
+                        val context = pendingRequests.remove(requestId) ?: return@postDelayed
+                        if (context.responseKey != null && latestRequests[context.responseKey] != requestId) return@postDelayed
+                        context.responseKey?.let { latestRequests.remove(it) }
+                        if (context.agentId != selectedAgentId) return@postDelayed
+                        if (context.sessionId != null && context.sessionId != selectedSessionId) return@postDelayed
+                        context.optimisticMessageId?.let { markMessage(it, DeliveryState.Failed) }
+                        status = "Request timed out"
+                    }, REQUEST_TIMEOUT_MS)
                 }
 
                 fun handleRpcResponse(body: JSONObject) {
@@ -193,6 +208,8 @@ class MainActivity : ComponentActivity() {
                         "sessions.read" -> {
                             val result = body.opt("result") as? JSONObject ?: return
                             if (!result.has("messages")) return
+                            val session = result.optJSONObject("session")
+                            activeTurnId = session?.optString("activeTurnId")?.ifBlank { null }
                             messages.clear()
                             val array = result.getJSONArray("messages")
                             for (i in 0 until array.length()) {
@@ -202,7 +219,17 @@ class MainActivity : ComponentActivity() {
                         }
                         "sessions.send" -> {
                             context.optimisticMessageId?.let { markMessage(it, DeliveryState.Sent) }
-                            status = "Sent"
+                            status = "Sent · refreshing"
+                            context.sessionId?.let {
+                                sendRpc("sessions.read", JSONObject().put("sessionId", it), it)
+                            }
+                        }
+                        "turn.interrupt" -> {
+                            activeTurnId = null
+                            status = "Stopped · refreshing"
+                            context.sessionId?.let {
+                                sendRpc("sessions.read", JSONObject().put("sessionId", it), it)
+                            }
                         }
                     }
                 }
@@ -271,6 +298,7 @@ class MainActivity : ComponentActivity() {
                     sessions = sessions,
                     messages = messages,
                     selectedSessionId = selectedSessionId,
+                    activeTurnId = activeTurnId,
                     pairingText = pairingText,
                     showPairingEditor = showPairingEditor,
                     input = input,
@@ -282,6 +310,7 @@ class MainActivity : ComponentActivity() {
                     onRefresh = { sendRpc("sessions.list") },
                     onSelectSession = { session ->
                         selectedSessionId = session.id
+                        activeTurnId = null
                         messages.clear()
                         status = "Loading ${session.shortTitle}"
                         sendRpc(
@@ -302,14 +331,26 @@ class MainActivity : ComponentActivity() {
                             deliveryState = DeliveryState.Sending
                         )
                         messages.add(optimisticMessage)
+                        val params = JSONObject().put("sessionId", sessionId).put("text", text)
+                        activeTurnId?.let { params.put("activeTurnId", it) }
                         sendRpc(
                             method = "sessions.send",
-                            params = JSONObject().put("sessionId", sessionId).put("text", text),
+                            params = params,
                             sessionId = sessionId,
                             optimisticMessageId = optimisticMessage.id
                         )
                         input = ""
                         status = "Sending"
+                    },
+                    onStopTurn = {
+                        val sessionId = selectedSessionId ?: return@RemoteConsoleScreen
+                        val turnId = activeTurnId ?: return@RemoteConsoleScreen
+                        sendRpc(
+                            method = "turn.interrupt",
+                            params = JSONObject().put("sessionId", sessionId).put("turnId", turnId),
+                            sessionId = sessionId
+                        )
+                        status = "Stopping"
                     }
                 )
             }
@@ -325,6 +366,7 @@ private fun RemoteConsoleScreen(
     sessions: List<SessionRow>,
     messages: List<ChatMessage>,
     selectedSessionId: String?,
+    activeTurnId: String?,
     pairingText: String,
     showPairingEditor: Boolean,
     input: String,
@@ -336,7 +378,8 @@ private fun RemoteConsoleScreen(
     onRefresh: () -> Unit,
     onSelectSession: (SessionRow) -> Unit,
     onInputChange: (String) -> Unit,
-    onSend: () -> Unit
+    onSend: () -> Unit,
+    onStopTurn: () -> Unit
 ) {
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
@@ -371,8 +414,10 @@ private fun RemoteConsoleScreen(
             ComposerBar(
                 value = input,
                 enabled = selectedSessionId != null,
+                isActiveTurn = activeTurnId != null,
                 onValueChange = onInputChange,
-                onSend = onSend
+                onSend = onSend,
+                onStopTurn = onStopTurn
             )
         }
     }
@@ -737,8 +782,10 @@ private fun MessageBubble(message: ChatMessage) {
 private fun ComposerBar(
     value: String,
     enabled: Boolean,
+    isActiveTurn: Boolean,
     onValueChange: (String) -> Unit,
-    onSend: () -> Unit
+    onSend: () -> Unit,
+    onStopTurn: () -> Unit
 ) {
     Surface(
         shape = RoundedCornerShape(8.dp),
@@ -759,13 +806,23 @@ private fun ComposerBar(
                 minLines = 1,
                 maxLines = 4
             )
+            if (isActiveTurn) {
+                OutlinedButton(
+                    onClick = onStopTurn,
+                    enabled = enabled,
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 14.dp)
+                ) {
+                    Text("Stop")
+                }
+            }
             Button(
                 onClick = onSend,
                 enabled = enabled && value.isNotBlank(),
                 shape = RoundedCornerShape(8.dp),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp)
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 14.dp)
             ) {
-                Text("Send")
+                Text(if (isActiveTurn) "Steer" else "Send")
             }
         }
     }

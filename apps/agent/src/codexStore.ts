@@ -1,5 +1,5 @@
-import { readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { readdir, readFile } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { SessionMessage, SessionReadResult, SessionSummary } from "@crc/protocol";
@@ -39,12 +39,13 @@ export class CodexStore {
     }
     this.assertRolloutPath(session.rolloutPath);
     const text = await readFile(session.rolloutPath, "utf8");
+    const runtime = this.readRuntimeState(text);
     const messages = text
       .split("\n")
       .filter(Boolean)
       .map((line, index) => this.toMessage(line, index))
       .filter((message): message is SessionMessage => message !== null);
-    return { session, messages };
+    return { session: { ...session, ...runtime }, messages };
   }
 
   private normalizeThread(row: ThreadRow): SessionSummary {
@@ -69,24 +70,83 @@ export class CodexStore {
       .slice(-limit)
       .reverse()
       .map((line) => JSON.parse(line) as { id: string; thread_name?: string; updated_at?: string });
-    return rows.map((row) => ({
-      id: row.id,
-      title: row.thread_name || row.id,
-      preview: "",
-      cwd: "",
-      rolloutPath: "",
-      createdAt: 0,
-      updatedAt: row.updated_at ? Date.parse(row.updated_at) : 0,
-      status: "unknown" as const
-    }));
+    const rolloutPaths = await this.rolloutPathsFor(new Set(rows.map((row) => row.id)));
+    return rows
+      .map((row) => ({
+        id: row.id,
+        title: row.thread_name || row.id,
+        preview: "",
+        cwd: "",
+        rolloutPath: rolloutPaths.get(row.id) ?? "",
+        createdAt: 0,
+        updatedAt: row.updated_at ? Date.parse(row.updated_at) : 0,
+        status: "unknown" as const
+      }))
+      .filter((row) => row.rolloutPath);
   }
 
   private assertRolloutPath(path: string): void {
     const resolved = resolve(path);
     const sessionsRoot = resolve(this.codexHome, "sessions");
-    if (!resolved.startsWith(sessionsRoot)) {
+    const rel = relative(sessionsRoot, resolved);
+    if (!rel || rel.startsWith("..") || isAbsolute(rel)) {
       throw new Error("Refusing to read rollout outside Codex sessions directory.");
     }
+  }
+
+  private async rolloutPathsFor(ids: Set<string>): Promise<Map<string, string>> {
+    const root = join(this.codexHome, "sessions");
+    const paths = new Map<string, string>();
+
+    async function visit(dir: string): Promise<void> {
+      let entries;
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        const fullPath = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          await visit(fullPath);
+          continue;
+        }
+        for (const id of ids) {
+          if (entry.name.endsWith(`${id}.jsonl`)) {
+            paths.set(id, fullPath);
+          }
+        }
+      }
+    }
+
+    await visit(root);
+    return paths;
+  }
+
+  private readRuntimeState(text: string): Pick<SessionSummary, "status" | "activeTurnId"> {
+    let activeTurnId: string | undefined;
+    for (const line of text.split("\n")) {
+      if (!line) continue;
+      let record: any;
+      try {
+        record = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const payload = record.payload ?? {};
+      if (record.type !== "event_msg") continue;
+      if (payload.type === "task_started" && typeof payload.turn_id === "string") {
+        activeTurnId = payload.turn_id;
+      }
+      if (
+        typeof payload.turn_id === "string" &&
+        payload.turn_id === activeTurnId &&
+        ["task_complete", "task_failed", "task_cancelled", "task_interrupted"].includes(payload.type)
+      ) {
+        activeTurnId = undefined;
+      }
+    }
+    return activeTurnId ? { status: "running", activeTurnId } : { status: "idle" };
   }
 
   private toMessage(line: string, index: number): SessionMessage | null {
