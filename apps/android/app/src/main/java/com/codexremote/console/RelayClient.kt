@@ -31,10 +31,21 @@ class RelayClient(
         open(pairing, generation)
     }
 
+    fun disconnect() {
+        generation += 1
+        pairing = null
+        socket?.cancel()
+        socket = null
+    }
+
     private fun open(pairing: Pairing, generation: Int) {
         val request = Request.Builder().url(pairing.relayUrl).build()
         socket = http.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (generation != this@RelayClient.generation) {
+                    webSocket.cancel()
+                    return
+                }
                 val hello = JSONObject()
                     .put("kind", "hello")
                     .put("deviceId", androidId)
@@ -57,6 +68,7 @@ class RelayClient(
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                if (generation != this@RelayClient.generation) return
                 val frame = JSONObject(text)
                 when (frame.optString("kind")) {
                     "encrypted" -> {
@@ -79,19 +91,27 @@ class RelayClient(
         })
     }
 
-    fun rpc(method: String, params: JSONObject = JSONObject()) {
+    fun rpc(method: String, params: JSONObject = JSONObject(), requestId: String = "android-${System.currentTimeMillis()}-${seq}"): String? {
         val target = pairing ?: run {
             onEvent("not paired")
-            return
+            return null
         }
-        val requestId = "android-${System.currentTimeMillis()}-${seq}"
+        val targetSocket = socket ?: run {
+            onEvent("not connected")
+            return null
+        }
         val body = JSONObject()
             .put("type", "rpc_request")
             .put("requestId", requestId)
             .put("method", method)
             .put("params", params)
         val envelope = cryptoBox.encryptJson(androidId, target.agentId, seq++, target.agentPublicKeyB64, body)
-        socket?.send(envelope.toString())
+        return if (targetSocket.send(envelope.toString())) {
+            requestId
+        } else {
+            onEvent("send failed")
+            null
+        }
     }
 
     private fun scheduleReconnect(message: String, generation: Int) {

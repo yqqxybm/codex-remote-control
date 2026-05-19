@@ -37,6 +37,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -57,6 +58,7 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 private const val PREF_PAIRING_URIS = "pairingUris"
 private const val PREF_LEGACY_PAIRING_URI = "pairingUri"
@@ -77,13 +79,18 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             ConsoleTheme {
+                val initialAgents = remember { loadPairingRecords(preferences) }
                 val agents = remember {
                     mutableStateListOf<PairingRecord>().apply {
-                        addAll(loadPairingRecords(preferences))
+                        addAll(initialAgents)
                     }
                 }
                 var selectedAgentId by remember {
-                    mutableStateOf(preferences.getString(PREF_SELECTED_AGENT_ID, null) ?: agents.firstOrNull()?.pairing?.agentId)
+                    mutableStateOf(
+                        preferences.getString(PREF_SELECTED_AGENT_ID, null)
+                            ?.takeIf { savedId -> initialAgents.any { it.pairing.agentId == savedId } }
+                            ?: initialAgents.firstOrNull()?.pairing?.agentId
+                    )
                 }
                 var status by remember { mutableStateOf("Offline") }
                 var pairingText by remember { mutableStateOf("") }
@@ -92,6 +99,8 @@ class MainActivity : ComponentActivity() {
                 var input by remember { mutableStateOf("") }
                 val sessions = remember { mutableStateListOf<SessionRow>() }
                 val messages = remember { mutableStateListOf<ChatMessage>() }
+                val pendingRequests = remember { mutableMapOf<String, RpcContext>() }
+                val latestRequests = remember { mutableMapOf<String, String>() }
 
                 lateinit var relay: RelayClient
 
@@ -106,6 +115,8 @@ class MainActivity : ComponentActivity() {
                     messages.clear()
                     selectedSessionId = null
                     input = ""
+                    pendingRequests.clear()
+                    latestRequests.clear()
                 }
 
                 fun connect(record: PairingRecord) {
@@ -114,6 +125,86 @@ class MainActivity : ComponentActivity() {
                     resetThreadView()
                     saveAgents()
                     relay.connect(record.pairing)
+                }
+
+                fun markMessage(messageId: String, deliveryState: DeliveryState) {
+                    val index = messages.indexOfFirst { it.id == messageId }
+                    if (index >= 0) {
+                        messages[index] = messages[index].copy(deliveryState = deliveryState)
+                    }
+                }
+
+                fun sendRpc(
+                    method: String,
+                    params: JSONObject = JSONObject(),
+                    sessionId: String? = null,
+                    optimisticMessageId: String? = null
+                ) {
+                    val agentId = selectedAgentId ?: run {
+                        status = "Select a Mac"
+                        return
+                    }
+                    val requestId = "android-${UUID.randomUUID()}"
+                    val responseKey = when (method) {
+                        "sessions.list" -> "$method:$agentId"
+                        "sessions.read" -> "$method:$agentId:$sessionId"
+                        else -> null
+                    }
+                    pendingRequests[requestId] = RpcContext(
+                        method = method,
+                        agentId = agentId,
+                        sessionId = sessionId,
+                        optimisticMessageId = optimisticMessageId,
+                        responseKey = responseKey
+                    )
+                    responseKey?.let { latestRequests[it] = requestId }
+                    if (relay.rpc(method, params, requestId) == null) {
+                        pendingRequests.remove(requestId)
+                        if (responseKey != null && latestRequests[responseKey] == requestId) {
+                            latestRequests.remove(responseKey)
+                        }
+                        optimisticMessageId?.let { markMessage(it, DeliveryState.Failed) }
+                    }
+                }
+
+                fun handleRpcResponse(body: JSONObject) {
+                    val requestId = body.optString("requestId")
+                    val context = pendingRequests.remove(requestId) ?: return
+                    if (context.agentId != selectedAgentId) return
+                    if (context.sessionId != null && context.sessionId != selectedSessionId) return
+                    if (context.responseKey != null && latestRequests[context.responseKey] != requestId) return
+                    context.responseKey?.let { latestRequests.remove(it) }
+
+                    if (!body.optBoolean("ok")) {
+                        context.optimisticMessageId?.let { markMessage(it, DeliveryState.Failed) }
+                        status = body.optString("error", "Request failed")
+                        return
+                    }
+
+                    when (context.method) {
+                        "sessions.list" -> {
+                            val result = body.opt("result") as? JSONArray ?: return
+                            sessions.clear()
+                            for (i in 0 until result.length()) {
+                                sessions.add(result.getJSONObject(i).toSessionRow())
+                            }
+                            status = "${sessions.size} sessions"
+                        }
+                        "sessions.read" -> {
+                            val result = body.opt("result") as? JSONObject ?: return
+                            if (!result.has("messages")) return
+                            messages.clear()
+                            val array = result.getJSONArray("messages")
+                            for (i in 0 until array.length()) {
+                                messages.add(array.getJSONObject(i).toChatMessage())
+                            }
+                            status = "${messages.size} messages"
+                        }
+                        "sessions.send" -> {
+                            context.optimisticMessageId?.let { markMessage(it, DeliveryState.Sent) }
+                            status = "Sent"
+                        }
+                    }
                 }
 
                 relay = remember {
@@ -125,39 +216,17 @@ class MainActivity : ComponentActivity() {
                         onConnected = {
                             runOnUiThread {
                                 status = "Online · ${it.agentName}"
-                                relay.rpc("sessions.list")
+                                if (it.agentId == selectedAgentId) {
+                                    sendRpc("sessions.list")
+                                }
                             }
                         },
-                        onRpcResponse = { body ->
-                            runOnUiThread {
-                                if (!body.optBoolean("ok")) {
-                                    status = body.optString("error", "Request failed")
-                                    return@runOnUiThread
-                                }
-                                when (val result = body.opt("result")) {
-                                    is JSONArray -> {
-                                        sessions.clear()
-                                        for (i in 0 until result.length()) {
-                                            sessions.add(result.getJSONObject(i).toSessionRow())
-                                        }
-                                        status = "${sessions.size} sessions"
-                                    }
-                                    is JSONObject -> {
-                                        if (result.has("messages")) {
-                                            messages.clear()
-                                            val array = result.getJSONArray("messages")
-                                            for (i in 0 until array.length()) {
-                                                messages.add(array.getJSONObject(i).toChatMessage())
-                                            }
-                                            status = "${messages.size} messages"
-                                        } else {
-                                            status = "Sent"
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        onRpcResponse = { body -> runOnUiThread { handleRpcResponse(body) } }
                     )
+                }
+
+                DisposableEffect(Unit) {
+                    onDispose { relay.disconnect() }
                 }
 
                 fun addAgent(uri: String) {
@@ -183,6 +252,7 @@ class MainActivity : ComponentActivity() {
                     saveAgents()
                     val next = selectedAgent()
                     if (next == null) {
+                        relay.disconnect()
                         status = "Offline"
                         showPairingEditor = true
                     } else {
@@ -209,20 +279,35 @@ class MainActivity : ComponentActivity() {
                     onAddAgent = { addAgent(pairingText) },
                     onRemoveAgent = ::removeSelectedAgent,
                     onSelectAgent = { record -> connect(record) },
-                    onRefresh = { relay.rpc("sessions.list") },
+                    onRefresh = { sendRpc("sessions.list") },
                     onSelectSession = { session ->
                         selectedSessionId = session.id
                         messages.clear()
                         status = "Loading ${session.shortTitle}"
-                        relay.rpc("sessions.read", JSONObject().put("sessionId", session.id))
+                        sendRpc(
+                            method = "sessions.read",
+                            params = JSONObject().put("sessionId", session.id),
+                            sessionId = session.id
+                        )
                     },
                     onInputChange = { input = it },
                     onSend = {
                         val sessionId = selectedSessionId ?: return@RemoteConsoleScreen
                         val text = input.trim()
                         if (text.isBlank()) return@RemoteConsoleScreen
-                        messages.add(ChatMessage("user", text))
-                        relay.rpc("sessions.send", JSONObject().put("sessionId", sessionId).put("text", text))
+                        val optimisticMessage = ChatMessage(
+                            id = "local-${UUID.randomUUID()}",
+                            role = "user",
+                            text = text,
+                            deliveryState = DeliveryState.Sending
+                        )
+                        messages.add(optimisticMessage)
+                        sendRpc(
+                            method = "sessions.send",
+                            params = JSONObject().put("sessionId", sessionId).put("text", text),
+                            sessionId = sessionId,
+                            optimisticMessageId = optimisticMessage.id
+                        )
                         input = ""
                         status = "Sending"
                     }
@@ -620,12 +705,23 @@ private fun MessageBubble(message: ChatMessage) {
             color = bubbleColor
         ) {
             Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-                Text(
-                    text = message.role.uppercase(Locale.getDefault()),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (isUser) Color(0xFFD8F4EC) else MaterialTheme.colorScheme.secondary,
-                    fontWeight = FontWeight.Bold
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = message.role.uppercase(Locale.getDefault()),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isUser) Color(0xFFD8F4EC) else MaterialTheme.colorScheme.secondary,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (message.deliveryState != DeliveryState.Sent) {
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = if (message.deliveryState == DeliveryState.Sending) "SENDING" else "FAILED",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (message.deliveryState == DeliveryState.Failed) Color(0xFFE4572E) else Color(0xFF7A7F73),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
                 Spacer(Modifier.height(4.dp))
                 Text(
                     text = message.text,
@@ -727,6 +823,14 @@ private fun ConsoleTheme(content: @Composable () -> Unit) {
 
 private data class PairingRecord(val uri: String, val pairing: Pairing)
 
+private data class RpcContext(
+    val method: String,
+    val agentId: String,
+    val sessionId: String? = null,
+    val optimisticMessageId: String? = null,
+    val responseKey: String? = null
+)
+
 private data class SessionRow(
     val id: String,
     val title: String,
@@ -739,7 +843,18 @@ private data class SessionRow(
     val updatedLabel: String = formatTimestamp(updatedAt)
 }
 
-private data class ChatMessage(val role: String, val text: String)
+private enum class DeliveryState {
+    Sent,
+    Sending,
+    Failed
+}
+
+private data class ChatMessage(
+    val id: String,
+    val role: String,
+    val text: String,
+    val deliveryState: DeliveryState = DeliveryState.Sent
+)
 
 private fun JSONObject.toSessionRow(): SessionRow {
     return SessionRow(
@@ -753,6 +868,7 @@ private fun JSONObject.toSessionRow(): SessionRow {
 
 private fun JSONObject.toChatMessage(): ChatMessage {
     return ChatMessage(
+        id = optString("id").ifBlank { "remote-${System.nanoTime()}" },
         role = optString("role", "assistant"),
         text = optString("text")
     )
