@@ -75,11 +75,11 @@ The agent has a whitelisted Codex writer. It supports:
 
 This requires a working Codex app-server proxy on the Mac. If the local Codex installation cannot start `codex app-server`, reads still work and writes return a clear error.
 
-The Android composer switches to `Steer` when the selected session has an active Codex turn, and shows a `Stop` action for that turn. After a send, steer, or stop request, the app refreshes the selected session so the phone shows the latest local Codex rollout.
+The Android composer switches to `Steer` when the selected session has an active Codex turn, and shows a `Stop` action for that turn. The app refreshes the selected session after write actions, when `Refresh` is tapped, and every few seconds while an active turn is running. Session reads return the latest 300 parsed messages by default so long Codex rollouts stay fast on mobile.
 
 ## Android Build
 
-Install a JDK and Android SDK, then:
+Install a JDK and Android SDK with platform 36 and Build Tools 35.0.1, then:
 
 ```bash
 cd apps/android
@@ -93,3 +93,5 @@ The generated debug APK path is:
 ```text
 apps/android/app/build/outputs/apk/debug/app-debug.apk
 ```
+
+When rolling out protocol changes, install the newest APK before restarting the updated Mac agent. Current agents reject write requests from old APKs that do not include the replay timestamp; reads still work, but sends fail with a missing creation timestamp error.

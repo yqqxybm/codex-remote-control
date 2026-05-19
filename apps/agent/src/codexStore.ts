@@ -5,6 +5,8 @@ import { promisify } from "node:util";
 import type { SessionMessage, SessionReadResult, SessionSummary } from "@crc/protocol";
 
 const execFileAsync = promisify(execFile);
+const defaultMessageLimit = 300;
+const maxMessageLimit = 1000;
 
 interface ThreadRow {
   id: string;
@@ -31,7 +33,7 @@ export class CodexStore {
     }
   }
 
-  async readSession(threadId: string): Promise<SessionReadResult> {
+  async readSession(threadId: string, messageLimit = defaultMessageLimit): Promise<SessionReadResult> {
     const sessions = await this.listSessions(500);
     const session = sessions.find((item) => item.id === threadId);
     if (!session) {
@@ -39,12 +41,9 @@ export class CodexStore {
     }
     this.assertRolloutPath(session.rolloutPath);
     const text = await readFile(session.rolloutPath, "utf8");
-    const runtime = this.readRuntimeState(text);
-    const messages = text
-      .split("\n")
-      .filter(Boolean)
-      .map((line, index) => this.toMessage(line, index))
-      .filter((message): message is SessionMessage => message !== null);
+    const lines = text.split("\n").filter(Boolean);
+    const runtime = this.readRuntimeState(lines);
+    const messages = this.latestMessages(lines, messageLimit);
     return { session: { ...session, ...runtime }, messages };
   }
 
@@ -123,10 +122,21 @@ export class CodexStore {
     return paths;
   }
 
-  private readRuntimeState(text: string): Pick<SessionSummary, "status" | "activeTurnId"> {
+  private latestMessages(lines: string[], messageLimit: number): SessionMessage[] {
+    const limit = Math.max(1, Math.min(maxMessageLimit, Math.floor(messageLimit) || defaultMessageLimit));
+    const messages: SessionMessage[] = [];
+    for (let index = lines.length - 1; index >= 0 && messages.length < limit; index -= 1) {
+      const message = this.toMessage(lines[index], index);
+      if (message) {
+        messages.push(message);
+      }
+    }
+    return messages.reverse();
+  }
+
+  private readRuntimeState(lines: string[]): Pick<SessionSummary, "status" | "activeTurnId"> {
     let activeTurnId: string | undefined;
-    for (const line of text.split("\n")) {
-      if (!line) continue;
+    for (const line of lines) {
       let record: any;
       try {
         record = JSON.parse(line);

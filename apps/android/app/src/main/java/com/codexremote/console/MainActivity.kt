@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -55,8 +56,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.edit
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -66,6 +69,8 @@ private const val PREF_PAIRING_URIS = "pairingUris"
 private const val PREF_LEGACY_PAIRING_URI = "pairingUri"
 private const val PREF_SELECTED_AGENT_ID = "selectedAgentId"
 private const val REQUEST_TIMEOUT_MS = 30_000L
+private const val MESSAGE_LIMIT = 300
+private const val ACTIVE_SESSION_POLL_MS = 3_000L
 
 class MainActivity : ComponentActivity() {
     private val cryptoBox = CryptoBox()
@@ -75,7 +80,7 @@ class MainActivity : ComponentActivity() {
         val preferences = getPreferences(MODE_PRIVATE)
         val androidId = preferences.getString("androidId", null)
             ?: "android-${System.currentTimeMillis()}".also {
-                preferences.edit().putString("androidId", it).apply()
+                preferences.edit { putString("androidId", it) }
             }
         val androidName = android.os.Build.MODEL ?: "Android"
         val mainHandler = Handler(Looper.getMainLooper())
@@ -182,6 +187,20 @@ class MainActivity : ComponentActivity() {
                     }, REQUEST_TIMEOUT_MS)
                 }
 
+                fun readSession(sessionId: String) {
+                    sendRpc(
+                        method = "sessions.read",
+                        params = JSONObject().put("sessionId", sessionId).put("messageLimit", MESSAGE_LIMIT),
+                        sessionId = sessionId
+                    )
+                }
+
+                fun refreshCurrentView() {
+                    status = if (selectedSessionId == null) "Refreshing sessions" else "Refreshing thread"
+                    sendRpc("sessions.list")
+                    selectedSessionId?.let { readSession(it) }
+                }
+
                 fun handleRpcResponse(body: JSONObject) {
                     val requestId = body.optString("requestId")
                     val context = pendingRequests.remove(requestId) ?: return
@@ -215,21 +234,17 @@ class MainActivity : ComponentActivity() {
                             for (i in 0 until array.length()) {
                                 messages.add(array.getJSONObject(i).toChatMessage())
                             }
-                            status = "${messages.size} messages"
+                            status = "${messages.size} latest messages"
                         }
                         "sessions.send" -> {
                             context.optimisticMessageId?.let { markMessage(it, DeliveryState.Sent) }
                             status = "Sent · refreshing"
-                            context.sessionId?.let {
-                                sendRpc("sessions.read", JSONObject().put("sessionId", it), it)
-                            }
+                            context.sessionId?.let { readSession(it) }
                         }
                         "turn.interrupt" -> {
                             activeTurnId = null
                             status = "Stopped · refreshing"
-                            context.sessionId?.let {
-                                sendRpc("sessions.read", JSONObject().put("sessionId", it), it)
-                            }
+                            context.sessionId?.let { readSession(it) }
                         }
                     }
                 }
@@ -291,6 +306,15 @@ class MainActivity : ComponentActivity() {
                     selectedAgent()?.let { connect(it) }
                 }
 
+                LaunchedEffect(selectedAgentId, selectedSessionId, activeTurnId) {
+                    val sessionId = selectedSessionId ?: return@LaunchedEffect
+                    activeTurnId ?: return@LaunchedEffect
+                    while (true) {
+                        delay(ACTIVE_SESSION_POLL_MS)
+                        readSession(sessionId)
+                    }
+                }
+
                 RemoteConsoleScreen(
                     agents = agents,
                     selectedAgentId = selectedAgentId,
@@ -307,17 +331,13 @@ class MainActivity : ComponentActivity() {
                     onAddAgent = { addAgent(pairingText) },
                     onRemoveAgent = ::removeSelectedAgent,
                     onSelectAgent = { record -> connect(record) },
-                    onRefresh = { sendRpc("sessions.list") },
+                    onRefresh = ::refreshCurrentView,
                     onSelectSession = { session ->
                         selectedSessionId = session.id
                         activeTurnId = null
                         messages.clear()
                         status = "Loading ${session.shortTitle}"
-                        sendRpc(
-                            method = "sessions.read",
-                            params = JSONObject().put("sessionId", session.id),
-                            sessionId = session.id
-                        )
+                        readSession(session.id)
                     },
                     onInputChange = { input = it },
                     onSend = {
@@ -706,6 +726,13 @@ private fun SessionRowItem(session: SessionRow, selected: Boolean, onClick: () -
 
 @Composable
 private fun MessageStream(messages: List<ChatMessage>, modifier: Modifier = Modifier) {
+    val listState = rememberLazyListState()
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) {
+            listState.animateScrollToItem(messages.lastIndex)
+        }
+    }
+
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(8.dp),
@@ -719,10 +746,11 @@ private fun MessageStream(messages: List<ChatMessage>, modifier: Modifier = Modi
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
+                    state = listState,
                     contentPadding = PaddingValues(12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(messages) { message ->
+                    items(messages, key = { it.id }) { message ->
                         MessageBubble(message)
                     }
                 }
@@ -752,7 +780,7 @@ private fun MessageBubble(message: ChatMessage) {
             Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = message.role.uppercase(Locale.getDefault()),
+                        text = message.role.uppercase(Locale.US),
                         style = MaterialTheme.typography.labelSmall,
                         color = if (isUser) Color(0xFFD8F4EC) else MaterialTheme.colorScheme.secondary,
                         fontWeight = FontWeight.Bold
@@ -957,11 +985,11 @@ private fun savePairingRecords(
 ) {
     val array = JSONArray()
     records.forEach { array.put(JSONObject().put("uri", it.uri)) }
-    preferences.edit()
-        .putString(PREF_PAIRING_URIS, array.toString())
-        .putString(PREF_SELECTED_AGENT_ID, selectedAgentId)
-        .putString(PREF_LEGACY_PAIRING_URI, records.firstOrNull()?.uri ?: "")
-        .apply()
+    preferences.edit {
+        putString(PREF_PAIRING_URIS, array.toString())
+        putString(PREF_SELECTED_AGENT_ID, selectedAgentId)
+        putString(PREF_LEGACY_PAIRING_URI, records.firstOrNull()?.uri ?: "")
+    }
 }
 
 private fun formatTimestamp(ms: Long): String {

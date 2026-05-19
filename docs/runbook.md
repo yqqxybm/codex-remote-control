@@ -74,6 +74,20 @@ The agent persists recent write request ids in the same config file to reject
 replayed mobile write envelopes. Removing the config file resets both pairing
 and replay history.
 
+## Upgrade Android And Agents
+
+Install the latest Android APK before restarting updated Mac agents when the
+protocol changes. Agents now require write RPCs to include a replay timestamp;
+older APKs can still read sessions, but sends and stops are rejected with a
+missing creation timestamp error.
+
+The Android build uses compile SDK 36 and Build Tools 35.0.1. The APK version is visible in
+`apps/android/app/build.gradle.kts`. Install the debug build from:
+
+```text
+apps/android/app/build/outputs/apk/debug/app-debug.apk
+```
+
 ## Local Development
 
 ```bash

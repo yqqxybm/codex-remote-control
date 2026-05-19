@@ -168,8 +168,8 @@ async function handleRpc(
     case "sessions.list":
       return store.listSessions();
     case "sessions.read": {
-      const { sessionId } = request.params as { sessionId: string };
-      return store.readSession(sessionId);
+      const { sessionId, messageLimit } = request.params as { sessionId: string; messageLimit?: number };
+      return store.readSession(sessionId, messageLimit);
     }
     case "sessions.send": {
       if (writeMode !== "app-server") {

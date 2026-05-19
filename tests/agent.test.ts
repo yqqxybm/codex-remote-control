@@ -88,7 +88,9 @@ describe("CodexStore fallback session index", () => {
         [
           JSON.stringify({ timestamp: "2026-05-19T08:32:26.000Z", type: "session_meta", payload: { id } }),
           JSON.stringify({ timestamp: "2026-05-19T08:32:26.100Z", type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } }),
-          JSON.stringify({ timestamp: "2026-05-19T08:32:26.200Z", type: "event_msg", payload: { type: "user_message", message: "hi" } })
+          JSON.stringify({ timestamp: "2026-05-19T08:32:26.200Z", type: "event_msg", payload: { type: "user_message", message: "hi" } }),
+          JSON.stringify({ timestamp: "2026-05-19T08:32:26.300Z", type: "event_msg", payload: { type: "agent_message", message: "second" } }),
+          JSON.stringify({ timestamp: "2026-05-19T08:32:26.400Z", type: "event_msg", payload: { type: "agent_message", message: "third" } })
         ].join("\n")
       );
 
@@ -101,6 +103,10 @@ describe("CodexStore fallback session index", () => {
       expect(read.session.status).toBe("running");
       expect(read.session.activeTurnId).toBe("turn-1");
       expect(read.messages[0]).toMatchObject({ role: "user", text: "hi" });
+
+      const limited = await store.readSession(id, 2);
+      expect(limited.messages.map((message) => message.text)).toEqual(["second", "third"]);
+      expect(limited.session.activeTurnId).toBe("turn-1");
     } finally {
       await rm(home, { recursive: true, force: true });
     }
