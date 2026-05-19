@@ -81,9 +81,30 @@ async function main(): Promise<void> {
   if (opened.type !== "rpc_request" || opened.method !== "ping") {
     throw new Error(`unexpected payload ${JSON.stringify(opened)}`);
   }
+  const attacker = await connect("android-attacker");
+  const attackerClosed = new Promise<number>((resolve) => {
+    attacker.once("close", (code) => resolve(code));
+  });
+  attacker.send(
+    JSON.stringify({
+      kind: "delivery_error",
+      from: "android-smoke",
+      to: "agent-smoke",
+      message: "spoofed"
+    })
+  );
+  const closeCode = await Promise.race([
+    attackerClosed,
+    wait(2000).then(() => {
+      throw new Error("timed out waiting for spoofed sender rejection");
+    })
+  ]);
+  if (closeCode !== 1008) {
+    throw new Error(`unexpected close code for spoofed sender ${closeCode}`);
+  }
   android.close();
   agent.close();
-  console.log("smoke ok: relay forwarded an encrypted message");
+  console.log("smoke ok: relay forwarded encrypted messages and rejected spoofed sender metadata");
 }
 
 main()

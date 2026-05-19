@@ -69,15 +69,19 @@ class RelayClient(
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 if (generation != this@RelayClient.generation) return
-                val frame = JSONObject(text)
-                when (frame.optString("kind")) {
-                    "encrypted" -> {
-                        val body = cryptoBox.decryptJson(frame, pairing.agentPublicKeyB64)
-                        if (body.optString("type") == "rpc_response") {
-                            onRpcResponse(body)
+                runCatching {
+                    val frame = JSONObject(text)
+                    when (frame.optString("kind")) {
+                        "encrypted" -> {
+                            val body = cryptoBox.decryptJson(frame, pairing.agentPublicKeyB64)
+                            if (body.optString("type") == "rpc_response") {
+                                onRpcResponse(body)
+                            }
                         }
+                        "delivery_error" -> onEvent(frame.optString("message"))
                     }
-                    "delivery_error" -> onEvent(frame.optString("message"))
+                }.onFailure {
+                    onEvent("ignored invalid relay message")
                 }
             }
 

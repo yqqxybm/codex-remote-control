@@ -56,6 +56,10 @@ wss.on("connection", (socket) => {
         socket.close(1008, "invalid relay token");
         return;
       }
+      const previous = clients.get(frame.deviceId);
+      if (previous && previous.socket !== socket) {
+        previous.socket.close(1008, "device reconnected");
+      }
       registeredDeviceId = frame.deviceId;
       clients.set(frame.deviceId, { hello: frame, socket });
       console.log(`[relay] online ${frame.role} ${frame.deviceName} ${frame.deviceId}`);
@@ -64,6 +68,11 @@ wss.on("connection", (socket) => {
 
     if (!registeredDeviceId) {
       socket.close(1008, "hello required");
+      return;
+    }
+
+    if ("from" in frame && frame.from !== registeredDeviceId) {
+      socket.close(1008, "frame from mismatch");
       return;
     }
 

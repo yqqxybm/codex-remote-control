@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { RpcRequest } from "../packages/protocol/src/index.js";
+import { AppServerClient } from "../apps/agent/src/appServerClient.js";
 import { CodexStore } from "../apps/agent/src/codexStore.js";
 import type { LoadedConfig } from "../apps/agent/src/config.js";
 import { reserveWriteRequest } from "../apps/agent/src/replayGuard.js";
@@ -65,6 +66,68 @@ describe("agent replay guard", () => {
       await expect(reserveWriteRequest(loadedConfig(join(dir, "agent.json")), request, 1_000 + 600_000)).rejects.toThrow(
         /replay window/
       );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("AppServerClient failure handling", () => {
+  it("returns a clear error when the app-server binary cannot start", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "crc-app-server-"));
+    try {
+      const client = new AppServerClient(join(dir, "missing-codex"), 200);
+      await expect(client.sendMessage("thread-1", "hello")).rejects.toThrow(/failed to start codex app-server/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("times out when app-server does not answer", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "crc-app-server-"));
+    try {
+      const bin = join(dir, "codex-hangs.js");
+      await writeFile(bin, "#!/usr/bin/env node\nsetTimeout(() => {}, 10_000);\n", { mode: 0o755 });
+      const client = new AppServerClient(bin, 50);
+      await expect(client.sendMessage("thread-1", "hello")).rejects.toThrow(/timed out.*initialize/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("shares initialization across concurrent write requests", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "crc-app-server-"));
+    try {
+      const bin = join(dir, "codex-delayed-init.js");
+      await writeFile(
+        bin,
+        [
+          "#!/usr/bin/env node",
+          'const readline = require("node:readline");',
+          "let initialized = false;",
+          "const rl = readline.createInterface({ input: process.stdin });",
+          'rl.on("line", (line) => {',
+          "  const msg = JSON.parse(line);",
+          '  if (msg.method === "initialize") {',
+          "    setTimeout(() => {",
+          "      initialized = true;",
+          '      process.stdout.write(`${JSON.stringify({ id: msg.id, result: {} })}\\n`);',
+          "    }, 100);",
+          "    return;",
+          "  }",
+          "  if (!initialized) {",
+          '    process.stdout.write(`${JSON.stringify({ id: msg.id, error: { message: "request before initialize" } })}\\n`);',
+          "    return;",
+          "  }",
+          "  process.stdout.write(`${JSON.stringify({ id: msg.id, result: { method: msg.method } })}\\n`);",
+          "});",
+          ""
+        ].join("\n"),
+        { mode: 0o755 }
+      );
+      const client = new AppServerClient(bin, 1_000);
+      await expect(Promise.all([client.sendMessage("thread-1", "first"), client.sendMessage("thread-2", "second")]))
+        .resolves.toEqual([{ method: "turn/start" }, { method: "turn/start" }]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -10,7 +10,7 @@ The target user has exactly two Macs and one Android phone. The product must be 
 
 ## Decision
 
-Use the user-owned relay server as a blind WebSocket relay and keep Codex access on each Mac. Android and Mac endpoints encrypt payloads end to end. The relay routes by device id only.
+Use the user-owned relay server as a blind WebSocket relay and keep Codex access on each Mac. Android and Mac endpoints encrypt payloads end to end. The relay routes by device id and rejects routable frames whose `from` metadata does not match the socket's registered device id.
 
 ## Consequences
 

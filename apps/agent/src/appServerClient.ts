@@ -4,33 +4,63 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
+const defaultRequestTimeoutMs = Math.max(
+  1000,
+  Number.parseInt(process.env.CRC_APP_SERVER_REQUEST_TIMEOUT_MS ?? "60000", 10) || 60000
+);
+
 export interface UserTextInput {
   type: "text";
   text: string;
 }
 
+interface PendingRequest {
+  timer: ReturnType<typeof setTimeout>;
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+}
+
 export class AppServerClient {
-  private readonly codexBin = resolveCodexBin();
   private child?: ChildProcessWithoutNullStreams;
+  private startPromise?: Promise<void>;
   private nextId = 1;
-  private pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  private pending = new Map<number, PendingRequest>();
+
+  constructor(
+    private readonly codexBin = resolveCodexBin(),
+    private readonly requestTimeoutMs = defaultRequestTimeoutMs
+  ) {}
 
   async start(): Promise<void> {
+    if (this.startPromise) return this.startPromise;
     if (this.child) return;
     this.child = spawn(this.codexBin, ["app-server", "--listen", "stdio://"], { stdio: "pipe" });
+    this.child.on("error", (error) => {
+      this.rejectAll(new Error(`failed to start codex app-server: ${error.message}`));
+      this.startPromise = undefined;
+      this.child = undefined;
+    });
     this.child.on("exit", (code) => {
-      for (const pending of this.pending.values()) {
-        pending.reject(new Error(`codex app-server exited with code ${code ?? "unknown"}`));
-      }
-      this.pending.clear();
+      this.rejectAll(new Error(`codex app-server exited with code ${code ?? "unknown"}`));
+      this.startPromise = undefined;
       this.child = undefined;
     });
     const rl = createInterface({ input: this.child.stdout });
     rl.on("line", (line) => this.onLine(line));
-    await this.request("initialize", {
+    this.startPromise = this.request("initialize", {
       clientInfo: { name: "codex-remote-console", version: "0.1.0" },
       capabilities: { experimentalApi: true, requestAttestation: false }
-    });
+    })
+      .then(() => {
+        this.startPromise = undefined;
+      })
+      .catch((error) => {
+        this.child?.kill();
+        this.startPromise = undefined;
+        this.child = undefined;
+        throw error;
+      });
+    return this.startPromise;
   }
 
   async sendMessage(threadId: string, text: string): Promise<unknown> {
@@ -63,7 +93,16 @@ export class AppServerClient {
     const id = this.nextId++;
     const message = { id, method, params };
     const promise = new Promise<unknown>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        const error = new Error(`codex app-server request timed out: ${method}`);
+        this.pending.delete(id);
+        reject(error);
+        this.child?.kill();
+        this.startPromise = undefined;
+        this.child = undefined;
+        this.rejectAll(error);
+      }, this.requestTimeoutMs);
+      this.pending.set(id, { timer, resolve, reject });
     });
     this.child.stdin.write(`${JSON.stringify(message)}\n`);
     return promise;
@@ -82,11 +121,20 @@ export class AppServerClient {
     const pending = this.pending.get(message.id);
     if (!pending) return;
     this.pending.delete(message.id);
+    clearTimeout(pending.timer);
     if (message.error) {
       pending.reject(new Error(message.error.message ?? JSON.stringify(message.error)));
       return;
     }
     pending.resolve(message.result);
+  }
+
+  private rejectAll(error: Error): void {
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.pending.clear();
   }
 }
 

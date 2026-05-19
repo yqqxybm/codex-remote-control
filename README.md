@@ -20,7 +20,7 @@ Mac Agent
 Codex app-server + ~/.codex sessions
 ```
 
-The relay only routes encrypted envelopes by device id. It does not see Codex session content and does not call Codex. The production route is through `user-owned relay server` at `wss://your-domain.example/codex-remote/ws`; LAN relay runs are only for development smoke tests.
+The relay only routes encrypted envelopes by device id and rejects frames whose `from` metadata does not match the socket's registered device id. It does not see Codex session content and does not call Codex. The production route is through `user-owned relay server` at `wss://your-domain.example/codex-remote/ws`; LAN relay runs are only for development smoke tests.
 
 Write requests include a creation timestamp and are replay-checked by the Mac agent. The agent stores a small recent write-request cache in `~/.codex-remote-console/agent.json` so a relay cannot repeat a captured write envelope during the accepted window.
 
@@ -73,7 +73,7 @@ The agent has a whitelisted Codex writer. It supports:
 - steer active turn: `turn/steer`
 - stop active turn: `turn/interrupt`
 
-This requires a working Codex app-server proxy on the Mac. If the local Codex installation cannot start `codex app-server`, reads still work and writes return a clear error.
+This requires a working Codex app-server proxy on the Mac. If the local Codex installation cannot start `codex app-server` or stops answering, reads still work and writes return a clear error. App-server requests time out after 60 seconds by default; override with `CRC_APP_SERVER_REQUEST_TIMEOUT_MS` if needed.
 
 The Android composer switches to `Steer` when the selected session has an active Codex turn, and shows a `Stop` action for that turn. The app refreshes the selected session after write actions, when `Refresh` is tapped, and every few seconds while an active turn is running. Session reads return the latest 300 parsed messages by default so long Codex rollouts stay fast on mobile.
 
