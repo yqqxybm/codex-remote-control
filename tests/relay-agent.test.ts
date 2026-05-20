@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
@@ -19,12 +19,14 @@ import {
 
 const repoRoot = new URL("..", import.meta.url).pathname;
 const children: ChildProcessWithoutNullStreams[] = [];
+const tempDirs: string[] = [];
 const processOutput = new WeakMap<ChildProcessWithoutNullStreams, string>();
 
-afterEach(() => {
+afterEach(async () => {
   for (const child of children.splice(0)) {
     child.kill();
   }
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
 function randomPort(): number {
@@ -120,6 +122,37 @@ function connectAndroid(url: string, accessToken: string): Promise<WebSocket> {
   });
 }
 
+function waitForSocketOpen(ws: WebSocket): Promise<void> {
+  return new Promise((resolve, reject) => {
+    ws.once("open", () => resolve());
+    ws.once("error", reject);
+  });
+}
+
+function waitForSocketClose(ws: WebSocket, timeoutMs = 3000): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error("timed out waiting for socket close"));
+    }, timeoutMs);
+    const onClose = (code: number) => {
+      cleanup();
+      resolve(code);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      ws.off("close", onClose);
+      ws.off("error", onError);
+    };
+    ws.once("close", onClose);
+    ws.once("error", onError);
+  });
+}
+
 async function nextEncryptedMessage(
   ws: WebSocket,
   pairing: PairingUriPayload,
@@ -165,6 +198,40 @@ describe("relay startup safety", () => {
 
     await expect(waitForExit(relay)).resolves.toBe(1);
   });
+
+  it("closes sockets that do not send hello promptly", async () => {
+    const port = randomPort();
+    const relay = spawnNode(["--import", "tsx", "apps/relay/src/index.ts"], {
+      CRC_RELAY_HOST: "127.0.0.1",
+      CRC_RELAY_PORT: String(port),
+      CRC_RELAY_ACCESS_TOKEN: "hello-timeout-token",
+      CRC_RELAY_HELLO_TIMEOUT_MS: "1000"
+    });
+    await waitForOutput(relay, /listening/);
+
+    const idle = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    await waitForSocketOpen(idle);
+
+    await expect(waitForSocketClose(idle)).resolves.toBe(1008);
+  });
+
+  it("closes oversized frames before relay parsing", async () => {
+    const port = randomPort();
+    const relay = spawnNode(["--import", "tsx", "apps/relay/src/index.ts"], {
+      CRC_RELAY_HOST: "127.0.0.1",
+      CRC_RELAY_PORT: String(port),
+      CRC_RELAY_ACCESS_TOKEN: "payload-limit-token",
+      CRC_RELAY_HELLO_TIMEOUT_MS: "5000",
+      CRC_RELAY_MAX_PAYLOAD_BYTES: "1024"
+    });
+    await waitForOutput(relay, /listening/);
+
+    const oversized = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    await waitForSocketOpen(oversized);
+    oversized.send("x".repeat(2048));
+
+    await expect(waitForSocketClose(oversized)).resolves.toBe(1009);
+  });
 });
 
 describe("agent pairing flow", () => {
@@ -173,6 +240,7 @@ describe("agent pairing flow", () => {
     const relayUrl = `ws://127.0.0.1:${port}/ws`;
     const token = "integration-token";
     const home = await mkdtemp(join(tmpdir(), "crc-flow-"));
+    tempDirs.push(home);
     const codexHome = join(home, "codex-home");
     await mkdir(codexHome, { recursive: true });
     await writeFile(join(codexHome, "session_index.jsonl"), "");

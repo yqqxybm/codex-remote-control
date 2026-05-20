@@ -16,7 +16,7 @@ The Android phone and each Mac are trusted endpoints. `user-owned relay server` 
 
 Remote access uses `wss://your-domain.example/codex-remote/ws` on the existing `user-owned relay server` Nginx TLS site. The relay process itself binds only to `127.0.0.1:8787`, so there is no separate public relay port to manage.
 
-The relay requires `CRC_RELAY_ACCESS_TOKEN` at startup unless an isolated local run explicitly sets `CRC_RELAY_ALLOW_UNAUTHENTICATED=1`.
+The relay requires `CRC_RELAY_ACCESS_TOKEN` at startup unless an isolated local run explicitly sets `CRC_RELAY_ALLOW_UNAUTHENTICATED=1`. It closes sockets that do not send an authenticated `hello` promptly and caps WebSocket payload size before application parsing.
 
 ## Protocol
 

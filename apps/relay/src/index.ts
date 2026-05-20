@@ -6,6 +6,11 @@ const host = process.env.CRC_RELAY_HOST ?? "127.0.0.1";
 const port = Number.parseInt(process.env.CRC_RELAY_PORT ?? "8787", 10);
 const accessToken = process.env.CRC_RELAY_ACCESS_TOKEN;
 const allowUnauthenticated = process.env.CRC_RELAY_ALLOW_UNAUTHENTICATED === "1";
+const helloTimeoutMs = Math.max(1000, Number.parseInt(process.env.CRC_RELAY_HELLO_TIMEOUT_MS ?? "5000", 10) || 5000);
+const maxPayloadBytes = Math.max(
+  1024,
+  Number.parseInt(process.env.CRC_RELAY_MAX_PAYLOAD_BYTES ?? String(64 * 1024), 10) || 64 * 1024
+);
 
 if (!accessToken && !allowUnauthenticated) {
   console.error("[relay] CRC_RELAY_ACCESS_TOKEN is required unless CRC_RELAY_ALLOW_UNAUTHENTICATED=1.");
@@ -29,7 +34,7 @@ const server = createServer((req, res) => {
   res.end("not found");
 });
 
-const wss = new WebSocketServer({ server, path: "/ws" });
+const wss = new WebSocketServer({ server, path: "/ws", maxPayload: maxPayloadBytes });
 
 function send(socket: WebSocket, frame: RelayFrame): void {
   socket.send(JSON.stringify(frame));
@@ -47,17 +52,27 @@ function deliveryError(socket: WebSocket, frame: RelayFrame, message: string): v
 
 wss.on("connection", (socket) => {
   let registeredDeviceId: string | undefined;
+  const helloTimer = setTimeout(() => {
+    if (!registeredDeviceId) {
+      socket.close(1008, "hello timeout");
+    }
+  }, helloTimeoutMs);
 
   socket.on("message", (raw) => {
     let frame: RelayFrame;
     try {
       frame = JSON.parse(raw.toString()) as RelayFrame;
     } catch {
+      if (!registeredDeviceId) {
+        socket.close(1008, "invalid json");
+        return;
+      }
       deliveryError(socket, { kind: "hello", deviceId: "unknown", deviceName: "unknown", role: "agent" }, "invalid json");
       return;
     }
 
     if (frame.kind === "hello") {
+      clearTimeout(helloTimer);
       if (accessToken && frame.accessToken !== accessToken) {
         socket.close(1008, "invalid relay token");
         return;
@@ -91,6 +106,7 @@ wss.on("connection", (socket) => {
   });
 
   socket.on("close", () => {
+    clearTimeout(helloTimer);
     if (registeredDeviceId && clients.get(registeredDeviceId)?.socket === socket) {
       clients.delete(registeredDeviceId);
       console.log(`[relay] offline ${registeredDeviceId}`);
