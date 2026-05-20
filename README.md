@@ -22,6 +22,8 @@ Codex app-server + ~/.codex sessions
 
 The relay only routes encrypted envelopes by device id and rejects frames whose `from` metadata does not match the socket's registered device id. It does not see Codex session content and does not call Codex. The production route is through `user-owned relay server` at `wss://your-domain.example/codex-remote/ws`; LAN relay runs are only for development smoke tests.
 
+The relay refuses to start unless `CRC_RELAY_ACCESS_TOKEN` is set. For isolated local experiments only, set `CRC_RELAY_ALLOW_UNAUTHENTICATED=1` explicitly. Android waits for a Mac-side pairing acknowledgement before it marks a Mac online and loads sessions.
+
 Write requests include a creation timestamp and are replay-checked by the Mac agent. The agent stores a small recent write-request cache in `~/.codex-remote-console/agent.json` so a relay cannot repeat a captured write envelope during the accepted window.
 
 ## Components

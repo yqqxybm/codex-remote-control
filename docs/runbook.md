@@ -26,6 +26,9 @@ https://your-domain.example/codex-remote/health
    CRC_RELAY_ACCESS_TOKEN=<long-random-token>
    ```
 
+   The relay refuses to start without this token unless
+   `CRC_RELAY_ALLOW_UNAUTHENTICATED=1` is set for an isolated local experiment.
+
 5. Run it with systemd as user `jms`:
 
    ```ini
@@ -67,6 +70,8 @@ npm start -w @crc/agent
 ```
 
 The agent prints a pairing URI. Paste it into the Android app. The Android app stores the last pairing URI and reconnects on app launch.
+Android marks a Mac online only after the agent accepts the pairing request and
+returns an encrypted pairing acknowledgement.
 
 For writes, the agent runs the Codex app-server over stdio. `CRC_CODEX_BIN` is optional; when unset, the agent tries `~/.codex/packages/standalone/current/codex`, then `/Applications/Codex.app/Contents/Resources/codex`, then `codex` from `PATH`. App-server requests time out after 60 seconds by default; set `CRC_APP_SERVER_REQUEST_TIMEOUT_MS` when a slower local setup needs more time.
 
@@ -80,6 +85,9 @@ Install the latest Android APK before restarting updated Mac agents when the
 protocol changes. Agents now require write RPCs to include a replay timestamp;
 older APKs can still read sessions, but sends and stops are rejected with a
 missing creation timestamp error.
+Android app versions that wait for `pairing.ack` require Mac agents with the
+same pairing-ack support; older agents leave the app connected to relay but not
+ready to load sessions.
 
 The Android build uses compile SDK 36 and Build Tools 35.0.1. The APK version is visible in
 `apps/android/app/build.gradle.kts`. Install the debug build from:

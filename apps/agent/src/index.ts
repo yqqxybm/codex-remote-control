@@ -35,6 +35,34 @@ function errorResponse(requestId: string, error: unknown): RpcResponse {
   };
 }
 
+function pairingAck(config: LoadedConfig["config"]): AppMessage {
+  return {
+    type: "event",
+    topic: "pairing.ack",
+    body: {
+      agentId: config.deviceId,
+      agentName: config.deviceName
+    }
+  };
+}
+
+async function sendEncrypted(
+  ws: WebSocket,
+  loaded: LoadedConfig,
+  peer: { deviceId: string; publicKeyB64: string },
+  message: AppMessage
+): Promise<void> {
+  const envelope = await sealMessage({
+    from: loaded.config.deviceId,
+    to: peer.deviceId,
+    seq: seq++,
+    privateKeyJwk: loaded.config.keyPair.privateKeyJwk,
+    peerPublicKeyB64: peer.publicKeyB64,
+    message
+  });
+  ws.send(JSON.stringify(envelope));
+}
+
 async function main(): Promise<void> {
   const loaded = await loadConfig();
   const { config } = loaded;
@@ -76,7 +104,7 @@ function connectRelay(loaded: LoadedConfig, store: CodexStore, appServer: AppSer
           return;
         }
         if (frame.kind === "pairing_request") {
-          await handlePairing(loaded, frame);
+          await handlePairing(loaded, ws, frame);
           return;
         }
         if (frame.kind === "encrypted") {
@@ -98,8 +126,12 @@ function connectRelay(loaded: LoadedConfig, store: CodexStore, appServer: AppSer
   });
 }
 
-async function handlePairing(loaded: LoadedConfig, frame: PairingRequestFrame): Promise<void> {
-  if (loaded.config.trustedAndroid) {
+async function handlePairing(loaded: LoadedConfig, ws: WebSocket, frame: PairingRequestFrame): Promise<void> {
+  const trustedAndroid = loaded.config.trustedAndroid;
+  if (trustedAndroid) {
+    if (frame.from === trustedAndroid.deviceId && frame.androidPublicKeyB64 === trustedAndroid.publicKeyB64) {
+      await sendEncrypted(ws, loaded, trustedAndroid, pairingAck(loaded.config));
+    }
     return;
   }
   if (!loaded.pairingSecret) {
@@ -121,6 +153,7 @@ async function handlePairing(loaded: LoadedConfig, frame: PairingRequestFrame): 
   delete loaded.pairingSecret;
   await saveConfig(loaded.path, loaded.config);
   console.log(`[agent] paired Android ${payload.androidName} (${frame.from})`);
+  await sendEncrypted(ws, loaded, loaded.config.trustedAndroid, pairingAck(loaded.config));
 }
 
 async function handleEncrypted(
@@ -150,15 +183,7 @@ async function handleEncrypted(
   } catch (error) {
     reply = errorResponse(message.requestId, error);
   }
-  const envelope = await sealMessage({
-    from: loaded.config.deviceId,
-    to: peer.deviceId,
-    seq: seq++,
-    privateKeyJwk: loaded.config.keyPair.privateKeyJwk,
-    peerPublicKeyB64: peer.publicKeyB64,
-    message: reply
-  });
-  ws.send(JSON.stringify(envelope));
+  await sendEncrypted(ws, loaded, peer, reply);
 }
 
 async function handleRpc(
@@ -198,6 +223,7 @@ async function handleRpc(
       return appServer.interrupt(sessionId, turnId);
     }
   }
+  throw new Error(`Unsupported RPC method: ${String((request as { method: string }).method)}`);
 }
 
 main().catch((error) => {

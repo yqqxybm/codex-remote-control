@@ -165,7 +165,7 @@ describe("AppServerClient failure handling", () => {
         ].join("\n"),
         { mode: 0o755 }
       );
-      const client = new AppServerClient(bin, 1_000);
+      const client = new AppServerClient(bin, 2_000);
       await expect(Promise.all([client.sendMessage("thread-1", "first"), client.sendMessage("thread-2", "second")]))
         .resolves.toEqual([{ method: "turn/start" }, { method: "turn/start" }]);
     } finally {

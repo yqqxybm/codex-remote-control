@@ -63,8 +63,7 @@ class RelayClient(
                         androidName
                     ).toString()
                 )
-                onEvent("connected to ${pairing.agentName}")
-                onConnected(pairing)
+                onEvent("connected to relay")
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -74,8 +73,13 @@ class RelayClient(
                     when (frame.optString("kind")) {
                         "encrypted" -> {
                             val body = cryptoBox.decryptJson(frame, pairing.agentPublicKeyB64)
-                            if (body.optString("type") == "rpc_response") {
-                                onRpcResponse(body)
+                            when (body.optString("type")) {
+                                "rpc_response" -> onRpcResponse(body)
+                                "event" -> {
+                                    if (body.optString("topic") == "pairing.ack") {
+                                        onConnected(pairing)
+                                    }
+                                }
                             }
                         }
                         "delivery_error" -> onEvent(frame.optString("message"))

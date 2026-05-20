@@ -16,6 +16,8 @@ The Android phone and each Mac are trusted endpoints. `user-owned relay server` 
 
 Remote access uses `wss://your-domain.example/codex-remote/ws` on the existing `user-owned relay server` Nginx TLS site. The relay process itself binds only to `127.0.0.1:8787`, so there is no separate public relay port to manage.
 
+The relay requires `CRC_RELAY_ACCESS_TOKEN` at startup unless an isolated local run explicitly sets `CRC_RELAY_ALLOW_UNAUTHENTICATED=1`.
+
 ## Protocol
 
 All application payloads are encrypted with ECDH P-256 and AES-256-GCM:
@@ -25,6 +27,10 @@ All application payloads are encrypted with ECDH P-256 and AES-256-GCM:
 3. For each envelope, the sender derives a shared secret with the recipient public key.
 4. The shared secret, salt, and context string derive a per-message AES key.
 5. The relay forwards the encrypted envelope unchanged.
+
+After accepting a pairing request, the Mac agent sends an encrypted `pairing.ack`
+event. Android treats the WebSocket as transport-only until that ack arrives,
+then marks the Mac online and loads sessions.
 
 Write RPCs also carry a client creation timestamp. The Mac agent accepts write
 requests only inside a short replay window and persists recent write request ids

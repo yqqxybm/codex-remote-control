@@ -2,9 +2,15 @@ import { createServer } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { DeliveryErrorFrame, HelloFrame, RelayFrame } from "@crc/protocol";
 
-const host = process.env.CRC_RELAY_HOST ?? "0.0.0.0";
+const host = process.env.CRC_RELAY_HOST ?? "127.0.0.1";
 const port = Number.parseInt(process.env.CRC_RELAY_PORT ?? "8787", 10);
 const accessToken = process.env.CRC_RELAY_ACCESS_TOKEN;
+const allowUnauthenticated = process.env.CRC_RELAY_ALLOW_UNAUTHENTICATED === "1";
+
+if (!accessToken && !allowUnauthenticated) {
+  console.error("[relay] CRC_RELAY_ACCESS_TOKEN is required unless CRC_RELAY_ALLOW_UNAUTHENTICATED=1.");
+  process.exit(1);
+}
 
 interface Client {
   hello: HelloFrame;
