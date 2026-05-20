@@ -65,24 +65,27 @@ function connectRelay(loaded: LoadedConfig, store: CodexStore, appServer: AppSer
     console.log(`[agent] connected to relay as ${config.deviceName} (${config.deviceId})`);
   });
 
-  ws.on("message", async (raw) => {
-    let frame: RelayFrame;
-    try {
-      frame = JSON.parse(raw.toString()) as RelayFrame;
-    } catch {
-      return;
-    }
-    try {
-      if (frame.kind === "pairing_request") {
-        await handlePairing(loaded, frame);
-        return;
-      }
-      if (frame.kind === "encrypted") {
-        await handleEncrypted(loaded, store, appServer, ws, frame);
-      }
-    } catch (error) {
-      console.error("[agent] message handling failed", error);
-    }
+  let messageQueue = Promise.resolve();
+  ws.on("message", (raw) => {
+    messageQueue = messageQueue
+      .then(async () => {
+        let frame: RelayFrame;
+        try {
+          frame = JSON.parse(raw.toString()) as RelayFrame;
+        } catch {
+          return;
+        }
+        if (frame.kind === "pairing_request") {
+          await handlePairing(loaded, frame);
+          return;
+        }
+        if (frame.kind === "encrypted") {
+          await handleEncrypted(loaded, store, appServer, ws, frame);
+        }
+      })
+      .catch((error) => {
+        console.error("[agent] message handling failed", error);
+      });
   });
 
   ws.on("error", (error) => {
@@ -114,6 +117,8 @@ async function handlePairing(loaded: LoadedConfig, frame: PairingRequestFrame): 
     deviceName: payload.androidName,
     publicKeyB64: frame.androidPublicKeyB64
   };
+  delete loaded.config.pairingSecret;
+  delete loaded.pairingSecret;
   await saveConfig(loaded.path, loaded.config);
   console.log(`[agent] paired Android ${payload.androidName} (${frame.from})`);
 }

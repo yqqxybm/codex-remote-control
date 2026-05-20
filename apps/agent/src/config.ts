@@ -23,6 +23,7 @@ export interface AgentConfig {
   codexHome: string;
   writeMode: "app-server" | "read-only";
   keyPair: DeviceKeyPair;
+  pairingSecret?: string;
   trustedAndroid?: TrustedAndroid;
   recentWriteRequestIds?: Array<{ requestId: string; createdAtMs: number }>;
 }
@@ -72,10 +73,18 @@ export async function loadConfig(): Promise<LoadedConfig> {
   };
 
   if (config.trustedAndroid) {
+    if (config.pairingSecret) {
+      delete config.pairingSecret;
+      await saveConfig(path, config);
+    }
     return { path, config };
   }
 
-  const pairingSecret = createPairingSecret();
+  const pairingSecret = config.pairingSecret ?? createPairingSecret();
+  if (!config.pairingSecret) {
+    config.pairingSecret = pairingSecret;
+    await saveConfig(path, config);
+  }
   const pairingUri = encodePairingUri({
     relayUrl: config.relayUrl,
     relayAccessToken: config.relayAccessToken,

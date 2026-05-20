@@ -1,11 +1,11 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { RpcRequest } from "../packages/protocol/src/index.js";
 import { AppServerClient } from "../apps/agent/src/appServerClient.js";
 import { CodexStore } from "../apps/agent/src/codexStore.js";
-import type { LoadedConfig } from "../apps/agent/src/config.js";
+import { loadConfig, type LoadedConfig } from "../apps/agent/src/config.js";
 import { reserveWriteRequest } from "../apps/agent/src/replayGuard.js";
 
 function loadedConfig(path: string): LoadedConfig {
@@ -24,6 +24,46 @@ function loadedConfig(path: string): LoadedConfig {
     }
   };
 }
+
+describe("agent config", () => {
+  it("keeps a pending pairing URI stable until the Android device pairs", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "crc-config-"));
+    try {
+      const configPath = join(dir, "agent.json");
+      vi.stubEnv("CRC_AGENT_CONFIG", configPath);
+      vi.stubEnv("CRC_DEVICE_NAME", "Agent Test");
+      vi.stubEnv("CRC_RELAY_URL", "wss://relay.example/ws");
+      vi.stubEnv("CRC_RELAY_ACCESS_TOKEN", "token");
+      vi.stubEnv("CRC_CODEX_HOME", join(dir, "codex-home"));
+
+      const first = await loadConfig();
+      const second = await loadConfig();
+
+      expect(first.pairingSecret).toBeTruthy();
+      expect(second.pairingSecret).toBe(first.pairingSecret);
+      expect(second.pairingUri).toBe(first.pairingUri);
+
+      const saved = JSON.parse(await readFile(configPath, "utf8")) as LoadedConfig["config"];
+      expect(saved.pairingSecret).toBe(first.pairingSecret);
+
+      saved.trustedAndroid = {
+        deviceId: "android-test",
+        deviceName: "Android Test",
+        publicKeyB64: "public"
+      };
+      await writeFile(configPath, `${JSON.stringify(saved, null, 2)}\n`);
+
+      const trusted = await loadConfig();
+      const trustedSaved = JSON.parse(await readFile(configPath, "utf8")) as LoadedConfig["config"];
+      expect(trusted.pairingSecret).toBeUndefined();
+      expect(trusted.pairingUri).toBeUndefined();
+      expect(trustedSaved.pairingSecret).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("agent replay guard", () => {
   it("persists and rejects duplicate write request ids", async () => {
