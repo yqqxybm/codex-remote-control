@@ -25,13 +25,14 @@ https://your-domain.example/codex-remote/health
    CRC_RELAY_PORT=8787
    CRC_RELAY_ACCESS_TOKEN=<long-random-token>
    CRC_RELAY_HELLO_TIMEOUT_MS=5000
-   CRC_RELAY_MAX_PAYLOAD_BYTES=65536
+   CRC_RELAY_MAX_PAYLOAD_BYTES=16777216
    ```
 
    The relay refuses to start without this token unless
    `CRC_RELAY_ALLOW_UNAUTHENTICATED=1` is set for an isolated local experiment.
-   The hello timeout and payload cap protect the public WebSocket endpoint
-   before a client is registered.
+   The hello timeout protects the public WebSocket endpoint before a client is
+   registered. The payload cap is intentionally large enough for encrypted
+   session reads with long Codex outputs.
 
 5. Run it with systemd as user `jms`:
 

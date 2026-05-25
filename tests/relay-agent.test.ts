@@ -122,6 +122,25 @@ function connectAndroid(url: string, accessToken: string): Promise<WebSocket> {
   });
 }
 
+function connectRelayClient(url: string, accessToken: string): Promise<WebSocket> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url);
+    ws.once("open", () => {
+      ws.send(
+        JSON.stringify({
+          kind: "hello",
+          deviceId: `agent-payload-limit-${Date.now()}`,
+          deviceName: "Payload Limit Agent",
+          role: "agent",
+          accessToken
+        })
+      );
+      resolve(ws);
+    });
+    ws.once("error", reject);
+  });
+}
+
 function waitForSocketOpen(ws: WebSocket): Promise<void> {
   return new Promise((resolve, reject) => {
     ws.once("open", () => resolve());
@@ -231,6 +250,11 @@ describe("relay startup safety", () => {
     oversized.send("x".repeat(2048));
 
     await expect(waitForSocketClose(oversized)).resolves.toBe(1009);
+
+    const android = await connectAndroid(`ws://127.0.0.1:${port}/ws`, "payload-limit-token");
+    const agent = await connectRelayClient(`ws://127.0.0.1:${port}/ws`, "payload-limit-token");
+    android.close();
+    agent.close();
   });
 });
 

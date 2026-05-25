@@ -9,7 +9,7 @@ const allowUnauthenticated = process.env.CRC_RELAY_ALLOW_UNAUTHENTICATED === "1"
 const helloTimeoutMs = Math.max(1000, Number.parseInt(process.env.CRC_RELAY_HELLO_TIMEOUT_MS ?? "5000", 10) || 5000);
 const maxPayloadBytes = Math.max(
   1024,
-  Number.parseInt(process.env.CRC_RELAY_MAX_PAYLOAD_BYTES ?? String(64 * 1024), 10) || 64 * 1024
+  Number.parseInt(process.env.CRC_RELAY_MAX_PAYLOAD_BYTES ?? String(16 * 1024 * 1024), 10) || 16 * 1024 * 1024
 );
 
 if (!accessToken && !allowUnauthenticated) {
@@ -111,6 +111,10 @@ wss.on("connection", (socket) => {
       clients.delete(registeredDeviceId);
       console.log(`[relay] offline ${registeredDeviceId}`);
     }
+  });
+
+  socket.on("error", (error) => {
+    console.error(`[relay] socket error ${registeredDeviceId ?? "unregistered"}: ${error.message}`);
   });
 });
 
