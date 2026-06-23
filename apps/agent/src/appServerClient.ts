@@ -8,6 +8,10 @@ const defaultRequestTimeoutMs = Math.max(
   1000,
   Number.parseInt(process.env.CRC_APP_SERVER_REQUEST_TIMEOUT_MS ?? "60000", 10) || 60000
 );
+const defaultIdleTimeoutMs = Math.max(
+  0,
+  Number.parseInt(process.env.CRC_APP_SERVER_IDLE_TIMEOUT_MS ?? String(10 * 60 * 1000), 10) || 10 * 60 * 1000
+);
 
 export interface UserTextInput {
   type: "text";
@@ -23,24 +27,30 @@ interface PendingRequest {
 export class AppServerClient {
   private child?: ChildProcessWithoutNullStreams;
   private startPromise?: Promise<void>;
+  private idleTimer?: ReturnType<typeof setTimeout>;
+  private keepAliveHolds = 0;
   private nextId = 1;
   private pending = new Map<number, PendingRequest>();
 
   constructor(
     private readonly codexBin = resolveCodexBin(),
-    private readonly requestTimeoutMs = defaultRequestTimeoutMs
+    private readonly requestTimeoutMs = defaultRequestTimeoutMs,
+    private readonly idleTimeoutMs = defaultIdleTimeoutMs
   ) {}
 
   async start(): Promise<void> {
     if (this.startPromise) return this.startPromise;
     if (this.child) return;
+    this.clearIdleTimer();
     this.child = spawn(this.codexBin, ["app-server", "--listen", "stdio://"], { stdio: "pipe" });
     this.child.on("error", (error) => {
+      this.clearIdleTimer();
       this.rejectAll(new Error(`failed to start codex app-server: ${error.message}`));
       this.startPromise = undefined;
       this.child = undefined;
     });
     this.child.on("exit", (code) => {
+      this.clearIdleTimer();
       this.rejectAll(new Error(`codex app-server exited with code ${code ?? "unknown"}`));
       this.startPromise = undefined;
       this.child = undefined;
@@ -53,8 +63,10 @@ export class AppServerClient {
     })
       .then(() => {
         this.startPromise = undefined;
+        this.scheduleIdleShutdown();
       })
       .catch((error) => {
+        this.clearIdleTimer();
         this.child?.kill();
         this.startPromise = undefined;
         this.child = undefined;
@@ -86,10 +98,23 @@ export class AppServerClient {
     return this.request("turn/interrupt", { threadId, turnId });
   }
 
+  holdAppServer(): () => void {
+    this.keepAliveHolds += 1;
+    this.clearIdleTimer();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.keepAliveHolds = Math.max(0, this.keepAliveHolds - 1);
+      this.scheduleIdleShutdown();
+    };
+  }
+
   private request(method: string, params: unknown): Promise<unknown> {
     if (!this.child) {
       throw new Error("app-server proxy is not started");
     }
+    this.clearIdleTimer();
     const id = this.nextId++;
     const message = { id, method, params };
     const promise = new Promise<unknown>((resolve, reject) => {
@@ -97,6 +122,7 @@ export class AppServerClient {
         const error = new Error(`codex app-server request timed out: ${method}`);
         this.pending.delete(id);
         reject(error);
+        this.clearIdleTimer();
         this.child?.kill();
         this.startPromise = undefined;
         this.child = undefined;
@@ -124,9 +150,11 @@ export class AppServerClient {
     clearTimeout(pending.timer);
     if (message.error) {
       pending.reject(new Error(message.error.message ?? JSON.stringify(message.error)));
+      this.scheduleIdleShutdown();
       return;
     }
     pending.resolve(message.result);
+    this.scheduleIdleShutdown();
   }
 
   private rejectAll(error: Error): void {
@@ -135,6 +163,34 @@ export class AppServerClient {
       pending.reject(error);
     }
     this.pending.clear();
+  }
+
+  private scheduleIdleShutdown(): void {
+    this.clearIdleTimer();
+    if (
+      this.idleTimeoutMs <= 0 ||
+      !this.child ||
+      this.pending.size > 0 ||
+      this.startPromise ||
+      this.keepAliveHolds > 0
+    ) {
+      return;
+    }
+    this.idleTimer = setTimeout(() => {
+      if (!this.child || this.pending.size > 0 || this.startPromise || this.keepAliveHolds > 0) {
+        return;
+      }
+      const child = this.child;
+      this.child = undefined;
+      this.startPromise = undefined;
+      child.kill();
+    }, this.idleTimeoutMs);
+  }
+
+  private clearIdleTimer(): void {
+    if (!this.idleTimer) return;
+    clearTimeout(this.idleTimer);
+    this.idleTimer = undefined;
   }
 }
 

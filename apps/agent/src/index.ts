@@ -1,4 +1,5 @@
 import WebSocket from "ws";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   openMessage,
   openPairingRequest,
@@ -17,6 +18,14 @@ import { reserveWriteRequest } from "./replayGuard.js";
 
 let seq = 1;
 const reconnectMs = Math.max(1000, Number.parseInt(process.env.CRC_AGENT_RECONNECT_MS ?? "3000", 10) || 3000);
+const turnStartGraceMs = Math.max(
+  1000,
+  Number.parseInt(process.env.CRC_REMOTE_TURN_START_GRACE_MS ?? String(2 * 60 * 1000), 10) || 2 * 60 * 1000
+);
+const turnMonitorPollMs = Math.max(
+  1000,
+  Number.parseInt(process.env.CRC_REMOTE_TURN_MONITOR_POLL_MS ?? "5000", 10) || 5000
+);
 
 function isRpcRequest(message: AppMessage): message is RpcRequest {
   return message.type === "rpc_request";
@@ -210,10 +219,17 @@ async function handleRpc(
         text: string;
         activeTurnId?: string;
       };
-      if (activeTurnId) {
-        return appServer.steer(sessionId, activeTurnId, text);
+      const releaseAppServer = appServer.holdAppServer();
+      try {
+        const result = activeTurnId
+          ? await appServer.steer(sessionId, activeTurnId, text)
+          : await appServer.sendMessage(sessionId, text);
+        releaseAppServerWhenTurnIsIdle(store, sessionId, releaseAppServer);
+        return result;
+      } catch (error) {
+        releaseAppServer();
+        throw error;
       }
-      return appServer.sendMessage(sessionId, text);
     }
     case "turn.interrupt": {
       if (writeMode !== "app-server") {
@@ -224,6 +240,36 @@ async function handleRpc(
     }
   }
   throw new Error(`Unsupported RPC method: ${String((request as { method: string }).method)}`);
+}
+
+function releaseAppServerWhenTurnIsIdle(store: CodexStore, sessionId: string, releaseAppServer: () => void): void {
+  void monitorTurnUntilIdle(store, sessionId)
+    .catch((error) => {
+      console.error("[agent] active turn monitor failed", error);
+    })
+    .finally(releaseAppServer);
+}
+
+async function monitorTurnUntilIdle(store: CodexStore, sessionId: string): Promise<void> {
+  const startedAt = Date.now();
+  let observedActiveTurn = false;
+  while (true) {
+    await delay(turnMonitorPollMs);
+    try {
+      const { session } = await store.readSession(sessionId, 1);
+      if (session.activeTurnId) {
+        observedActiveTurn = true;
+        continue;
+      }
+      if (observedActiveTurn || Date.now() - startedAt >= turnStartGraceMs) {
+        return;
+      }
+    } catch (error) {
+      if (!observedActiveTurn && Date.now() - startedAt >= turnStartGraceMs) {
+        throw error;
+      }
+    }
+  }
 }
 
 main().catch((error) => {

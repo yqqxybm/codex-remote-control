@@ -78,7 +78,7 @@ The agent prints a pairing URI. Paste it into the Android app. The Android app s
 Android marks a Mac online only after the agent accepts the pairing request and
 returns an encrypted pairing acknowledgement.
 
-For writes, the agent runs the Codex app-server over stdio. `CRC_CODEX_BIN` is optional; when unset, the agent tries `~/.codex/packages/standalone/current/codex`, then `/Applications/Codex.app/Contents/Resources/codex`, then `codex` from `PATH`. App-server requests time out after 60 seconds by default; set `CRC_APP_SERVER_REQUEST_TIMEOUT_MS` when a slower local setup needs more time.
+For writes, the agent runs the Codex app-server over stdio. `CRC_CODEX_BIN` is optional; when unset, the agent tries `~/.codex/packages/standalone/current/codex`, then `/Applications/Codex.app/Contents/Resources/codex`, then `codex` from `PATH`. App-server requests time out after 60 seconds by default; set `CRC_APP_SERVER_REQUEST_TIMEOUT_MS` when a slower local setup needs more time. After a remote write starts or steers a Codex turn, the agent keeps the app-server child alive while that session still reports an active turn, then stops the child after 10 idle minutes by default. The active-turn monitor waits up to 2 minutes for a newly started turn to appear in local Codex session state before treating the write as idle; tune `CRC_REMOTE_TURN_START_GRACE_MS` and `CRC_REMOTE_TURN_MONITOR_POLL_MS` only when local session state is unusually delayed. Set `CRC_APP_SERVER_IDLE_TIMEOUT_MS=0` to disable idle shutdown, or use a larger millisecond value when follow-up writes should keep a warm app-server process.
 
 The agent persists recent write request ids in the same config file to reject
 replayed mobile write envelopes. Removing the config file resets both pairing

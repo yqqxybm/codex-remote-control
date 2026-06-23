@@ -75,7 +75,7 @@ The agent has a whitelisted Codex writer. It supports:
 - steer active turn: `turn/steer`
 - stop active turn: `turn/interrupt`
 
-This requires a working Codex app-server proxy on the Mac. If the local Codex installation cannot start `codex app-server` or stops answering, reads still work and writes return a clear error. App-server requests time out after 60 seconds by default; override with `CRC_APP_SERVER_REQUEST_TIMEOUT_MS` if needed.
+This requires a working Codex app-server proxy on the Mac. If the local Codex installation cannot start `codex app-server` or stops answering, reads still work and writes return a clear error. App-server requests time out after 60 seconds by default; override with `CRC_APP_SERVER_REQUEST_TIMEOUT_MS` if needed. After a remote write starts or steers a Codex turn, the agent keeps its app-server child alive while that session still reports an active turn, then stops the child after 10 idle minutes by default. The active-turn monitor waits up to 2 minutes for a newly started turn to appear in local Codex session state before treating the write as idle; override with `CRC_REMOTE_TURN_START_GRACE_MS` or `CRC_REMOTE_TURN_MONITOR_POLL_MS` when needed. Set `CRC_APP_SERVER_IDLE_TIMEOUT_MS=0` to disable idle shutdown, or set a larger millisecond value for warmer follow-up writes.
 
 The Android composer switches to `Steer` when the selected session has an active Codex turn, and shows a `Stop` action for that turn. The app refreshes the selected session after write actions, when `Refresh` is tapped, and every few seconds while an active turn is running. Session reads return the latest 300 parsed messages by default so long Codex rollouts stay fast on mobile.
 

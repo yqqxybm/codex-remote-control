@@ -1,6 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import type { RpcRequest } from "../packages/protocol/src/index.js";
 import { AppServerClient } from "../apps/agent/src/appServerClient.js";
@@ -23,6 +24,19 @@ function loadedConfig(path: string): LoadedConfig {
       }
     }
   };
+}
+
+async function waitForProcessExit(pid: number, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
+    await delay(25);
+  }
+  throw new Error(`process ${pid} did not exit`);
 }
 
 describe("agent config", () => {
@@ -169,6 +183,86 @@ describe("AppServerClient failure handling", () => {
       await expect(Promise.all([client.sendMessage("thread-1", "first"), client.sendMessage("thread-2", "second")]))
         .resolves.toEqual([{ method: "turn/start" }, { method: "turn/start" }]);
     } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("stops the app-server child after it is idle", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "crc-app-server-"));
+    try {
+      const pidPath = join(dir, "pid.txt");
+      const bin = join(dir, "codex-idle.js");
+      await writeFile(
+        bin,
+        [
+          "#!/usr/bin/env node",
+          'const fs = require("node:fs");',
+          'const readline = require("node:readline");',
+          "fs.writeFileSync(process.env.CRC_TEST_APP_SERVER_PID_PATH, String(process.pid));",
+          'process.on("SIGTERM", () => process.exit(0));',
+          "setInterval(() => {}, 1_000);",
+          "const rl = readline.createInterface({ input: process.stdin });",
+          'rl.on("line", (line) => {',
+          "  const msg = JSON.parse(line);",
+          "  const result = msg.method === 'initialize' ? {} : { method: msg.method };",
+          '  process.stdout.write(`${JSON.stringify({ id: msg.id, result })}\\n`);',
+          "});",
+          ""
+        ].join("\n"),
+        { mode: 0o755 }
+      );
+      vi.stubEnv("CRC_TEST_APP_SERVER_PID_PATH", pidPath);
+      const client = new AppServerClient(bin, 1_000, 50);
+
+      await expect(client.sendMessage("thread-1", "hello")).resolves.toEqual({ method: "turn/start" });
+      const pid = Number(await readFile(pidPath, "utf8"));
+      await waitForProcessExit(pid);
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the app-server child alive while a hold is active", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "crc-app-server-"));
+    let release: (() => void) | undefined;
+    try {
+      const pidPath = join(dir, "pid.txt");
+      const bin = join(dir, "codex-held.js");
+      await writeFile(
+        bin,
+        [
+          "#!/usr/bin/env node",
+          'const fs = require("node:fs");',
+          'const readline = require("node:readline");',
+          "fs.writeFileSync(process.env.CRC_TEST_APP_SERVER_PID_PATH, String(process.pid));",
+          'process.on("SIGTERM", () => process.exit(0));',
+          "setInterval(() => {}, 1_000);",
+          "const rl = readline.createInterface({ input: process.stdin });",
+          'rl.on("line", (line) => {',
+          "  const msg = JSON.parse(line);",
+          "  const result = msg.method === 'initialize' ? {} : { method: msg.method };",
+          '  process.stdout.write(`${JSON.stringify({ id: msg.id, result })}\\n`);',
+          "});",
+          ""
+        ].join("\n"),
+        { mode: 0o755 }
+      );
+      vi.stubEnv("CRC_TEST_APP_SERVER_PID_PATH", pidPath);
+      const client = new AppServerClient(bin, 1_000, 50);
+      release = client.holdAppServer();
+
+      await expect(client.sendMessage("thread-1", "hello")).resolves.toEqual({ method: "turn/start" });
+      const pid = Number(await readFile(pidPath, "utf8"));
+      await delay(125);
+      expect(() => process.kill(pid, 0)).not.toThrow();
+
+      release();
+      release = undefined;
+      await waitForProcessExit(pid);
+    } finally {
+      release?.();
+      vi.unstubAllEnvs();
       await rm(dir, { recursive: true, force: true });
     }
   });
