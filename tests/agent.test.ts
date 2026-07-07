@@ -1,13 +1,17 @@
+import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 import type { RpcRequest } from "../packages/protocol/src/index.js";
 import { AppServerClient } from "../apps/agent/src/appServerClient.js";
 import { CodexStore } from "../apps/agent/src/codexStore.js";
 import { loadConfig, type LoadedConfig } from "../apps/agent/src/config.js";
 import { reserveWriteRequest } from "../apps/agent/src/replayGuard.js";
+
+const execFileAsync = promisify(execFile);
 
 function loadedConfig(path: string): LoadedConfig {
   return {
@@ -24,6 +28,19 @@ function loadedConfig(path: string): LoadedConfig {
       }
     }
   };
+}
+
+function sqlString(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+async function hasSqlite(): Promise<boolean> {
+  try {
+    await execFileAsync("sqlite3", ["--version"]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function waitForProcessExit(pid: number, timeoutMs = 1_000): Promise<void> {
@@ -273,12 +290,17 @@ describe("CodexStore fallback session index", () => {
     const home = await mkdtemp(join(tmpdir(), "crc-store-"));
     try {
       const id = "019e3f5d-666c-74c1-bf7c-32105460a8d5";
+      const subagentId = "019e3f5d-666c-74c1-bf7c-32105460a8d6";
       const sessionDir = join(home, "sessions", "2026", "05", "19");
       const rolloutPath = join(sessionDir, `rollout-2026-05-19T08-32-26-${id}.jsonl`);
+      const subagentRolloutPath = join(sessionDir, `rollout-2026-05-19T08-32-27-${subagentId}.jsonl`);
       await mkdir(sessionDir, { recursive: true });
       await writeFile(
         join(home, "session_index.jsonl"),
-        `${JSON.stringify({ id, thread_name: "Active thread", updated_at: "2026-05-19T08:32:26.000Z" })}\n`
+        [
+          JSON.stringify({ id, thread_name: "Active thread", updated_at: "2026-05-19T08:32:26.000Z" }),
+          JSON.stringify({ id: subagentId, thread_name: "Worker thread", updated_at: "2026-05-19T08:32:27.000Z" })
+        ].join("\n")
       );
       await writeFile(
         rolloutPath,
@@ -290,10 +312,26 @@ describe("CodexStore fallback session index", () => {
           JSON.stringify({ timestamp: "2026-05-19T08:32:26.400Z", type: "event_msg", payload: { type: "agent_message", message: "third" } })
         ].join("\n")
       );
+      await writeFile(
+        subagentRolloutPath,
+        [
+          JSON.stringify({
+            timestamp: "2026-05-19T08:32:27.000Z",
+            type: "session_meta",
+            payload: {
+              id: subagentId,
+              source: { subagent: { thread_spawn: { parent_thread_id: id, depth: 1 } } },
+              thread_source: "subagent"
+            }
+          }),
+          JSON.stringify({ timestamp: "2026-05-19T08:32:27.100Z", type: "event_msg", payload: { type: "agent_message", message: "hidden" } })
+        ].join("\n")
+      );
 
       const store = new CodexStore(home);
       const sessions = await store.listSessions();
       expect(sessions).toHaveLength(1);
+      expect(sessions.map((session) => session.id)).toEqual([id]);
       expect(sessions[0].rolloutPath).toBe(rolloutPath);
 
       const read = await store.readSession(id);
@@ -304,6 +342,63 @@ describe("CodexStore fallback session index", () => {
       const limited = await store.readSession(id, 2);
       expect(limited.messages.map((message) => message.text)).toEqual(["second", "third"]);
       expect(limited.session.activeTurnId).toBe("turn-1");
+      await expect(store.readSession(subagentId)).rejects.toThrow(/Unknown Codex session/);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("CodexStore sqlite threads", () => {
+  it("hides subagent threads from the remote session list", async () => {
+    if (!(await hasSqlite())) return;
+
+    const home = await mkdtemp(join(tmpdir(), "crc-store-sqlite-"));
+    try {
+      const id = "019e3f5d-666c-74c1-bf7c-32105460a8e5";
+      const subagentId = "019e3f5d-666c-74c1-bf7c-32105460a8e6";
+      const sessionDir = join(home, "sessions", "2026", "05", "19");
+      const rolloutPath = join(sessionDir, `rollout-2026-05-19T08-32-26-${id}.jsonl`);
+      const subagentRolloutPath = join(sessionDir, `rollout-2026-05-19T08-32-27-${subagentId}.jsonl`);
+      const dbPath = join(home, "state_5.sqlite");
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(
+        rolloutPath,
+        [
+          JSON.stringify({ timestamp: "2026-05-19T08:32:26.000Z", type: "session_meta", payload: { id } }),
+          JSON.stringify({ timestamp: "2026-05-19T08:32:26.100Z", type: "event_msg", payload: { type: "agent_message", message: "visible" } })
+        ].join("\n")
+      );
+      await writeFile(
+        subagentRolloutPath,
+        [
+          JSON.stringify({
+            timestamp: "2026-05-19T08:32:27.000Z",
+            type: "session_meta",
+            payload: {
+              id: subagentId,
+              source: { subagent: { thread_spawn: { parent_thread_id: id, depth: 1 } } },
+              thread_source: "subagent"
+            }
+          }),
+          JSON.stringify({ timestamp: "2026-05-19T08:32:27.100Z", type: "event_msg", payload: { type: "agent_message", message: "hidden" } })
+        ].join("\n")
+      );
+
+      const subagentSource = JSON.stringify({ subagent: { thread_spawn: { parent_thread_id: id, depth: 1 } } });
+      await execFileAsync("sqlite3", [
+        dbPath,
+        [
+          "create table threads (id text primary key, title text not null, preview text not null default '', cwd text not null default '', rollout_path text not null, created_at_ms integer, updated_at_ms integer, source text not null default '', thread_source text not null default '', archived integer not null default 0);",
+          `insert into threads (id, title, preview, cwd, rollout_path, created_at_ms, updated_at_ms, source, thread_source, archived) values (${sqlString(id)}, 'User thread', 'visible', '/tmp/project', ${sqlString(rolloutPath)}, 1, 1000, 'vscode', '', 0);`,
+          `insert into threads (id, title, preview, cwd, rollout_path, created_at_ms, updated_at_ms, source, thread_source, archived) values (${sqlString(subagentId)}, 'Worker thread', 'hidden', '/tmp/project', ${sqlString(subagentRolloutPath)}, 2, 2000, ${sqlString(subagentSource)}, 'subagent', 0);`
+        ].join("\n")
+      ]);
+
+      const store = new CodexStore(home);
+      const sessions = await store.listSessions();
+      expect(sessions.map((session) => session.id)).toEqual([id]);
+      await expect(store.readSession(subagentId)).rejects.toThrow(/Unknown Codex session/);
     } finally {
       await rm(home, { recursive: true, force: true });
     }
