@@ -198,6 +198,7 @@ function resolveCodexBin(): string {
   const candidates = [
     process.env.CRC_CODEX_BIN,
     join(homedir(), ".codex/packages/standalone/current/codex"),
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
     "/Applications/Codex.app/Contents/Resources/codex",
     "codex"
   ].filter((value): value is string => Boolean(value));
